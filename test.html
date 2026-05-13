@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>DockHand Event Stream</title>
+</head>
+<body>
+
+<h1>Docker Events</h1>
+
+<ul id="events"></ul>
+
+<script>
+    const ws = new WebSocket("ws://localhost:8000/ws");
+
+    ws.onopen = () => {
+        console.log("Connected to WebSocket");
+
+        // keep connection alive
+        ws.send("hello");
+    };
+
+    ws.onmessage = (event) => {
+        console.log(event.data);
+
+        const li = document.createElement("li");
+        li.textContent = event.data;
+
+        document.getElementById("events").appendChild(li);
+    };
+
+    ws.onerror = (err) => {
+        console.error(err);
+    };
+
+    ws.onclose = () => {
+        console.log("Connection closed");
+    };
+</script>
+
+</body>
+</html>
