@@ -1,0 +1,275 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ─────────────────────────────────────────────────────
+   DockHeal Dark UI — Grayish-black + Accent Blue
+   Accent: rgb(138, 180, 248)  →  #8ab4f8
+   Icons/Logos: white
+   Background: grayish-black
+   Cards: black with light grayish borders
+   Corners: minimal rounding
+   Font: Inter (clean, modern)
+   ───────────────────────────────────────────────────── */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+:root {
+  /* ── Typography ── */
+  --sans:    'Inter', system-ui, -apple-system, sans-serif;
+  --heading: 'Inter', system-ui, -apple-system, sans-serif;
+  --mono:    'JetBrains Mono', ui-monospace, Consolas, monospace;
+
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.6;
+  letter-spacing: 0.01em;
+  color-scheme: dark;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* ── Minimal corner radius ── */
+  --radius: 0.25rem; /* slightly rounded */
+
+  /* ── Core palette ── */
+  --background:           #202124;
+  --foreground:           #e8eaed;
+  --card:                 #202124;
+  --card-foreground:      #e8eaed;
+  --popover:              #202124;
+  --popover-foreground:   #e8eaed;
+
+  --primary:              #8ab4f8;
+  --primary-foreground:   #202124;
+
+  --secondary:            #282a2d;
+  --secondary-foreground: #e8eaed;
+
+  --muted:                #282a2d;
+  --muted-foreground:     #9aa0a6;
+
+  --accent:               rgba(138, 180, 248, 0.1);
+  --accent-foreground:    #8ab4f8;
+
+  --destructive:          #f28b82;
+  --destructive-foreground: #202124;
+  --input:                #3c4043;
+  --ring:                 #8ab4f8;
+  --border:               #3c4043;
+
+  --chart-1: #8ab4f8;
+  --chart-2: #6d9eeb;
+  --chart-3: #4a86db;
+  --chart-4: #a4c6fa;
+  --chart-5: #c3d9fc;
+
+  /* ── Sidebar ── */
+  --sidebar:                     #202124;
+  --sidebar-foreground:          #9aa0a6;
+  --sidebar-primary:             #8ab4f8;
+  --sidebar-primary-foreground:  #202124;
+  --sidebar-accent:              rgba(138, 180, 248, 0.1);
+  --sidebar-accent-foreground:   #e8eaed;
+  --sidebar-border:              #3c4043;
+  --sidebar-ring:                #8ab4f8;
+}
+
+/* ── Light-mode override (kept for completeness) ── */
+.light,
+:root:not(.dark) {
+  --background:           #fafafa;
+  --foreground:           #18181b;
+  --card:                 #ffffff;
+  --card-foreground:      #18181b;
+  --popover:              #ffffff;
+  --popover-foreground:   #18181b;
+  --primary:              #3b82f6;
+  --primary-foreground:   #ffffff;
+  --secondary:            #f4f4f5;
+  --secondary-foreground: #3f3f46;
+  --muted:                #f4f4f5;
+  --muted-foreground:     #71717a;
+  --accent:               rgba(59, 130, 246, 0.06);
+  --accent-foreground:    #2563eb;
+  --destructive:          #ef4444;
+  --input:                #e4e4e7;
+  --ring:                 #3b82f6;
+  --border:               #e4e4e7;
+  --chart-1: #3b82f6;
+  --chart-2: #2563eb;
+  --chart-3: #1d4ed8;
+  --chart-4: #60a5fa;
+  --chart-5: #93c5fd;
+  --sidebar:                     #ffffff;
+  --sidebar-foreground:          #71717a;
+  --sidebar-primary:             #3b82f6;
+  --sidebar-primary-foreground:  #ffffff;
+  --sidebar-accent:              rgba(59, 130, 246, 0.06);
+  --sidebar-accent-foreground:   #18181b;
+  --sidebar-border:              #e4e4e7;
+  --sidebar-ring:                #3b82f6;
+}
+
+/* ── Dark mode explicit class ── */
+.dark {
+  --background:           #202124;
+  --foreground:           #e8eaed;
+  --card:                 #202124;
+  --card-foreground:      #e8eaed;
+  --popover:              #202124;
+  --popover-foreground:   #e8eaed;
+  --primary:              #8ab4f8;
+  --primary-foreground:   #202124;
+  --secondary:            #282a2d;
+  --secondary-foreground: #e8eaed;
+  --muted:                #282a2d;
+  --muted-foreground:     #9aa0a6;
+  --accent:               rgba(138, 180, 248, 0.1);
+  --accent-foreground:    #8ab4f8;
+  --destructive:          #f28b82;
+  --destructive-foreground: #202124;
+  --border:               #3c4043;
+  --input:                #3c4043;
+  --ring:                 #8ab4f8;
+  --chart-1: #8ab4f8;
+  --chart-2: #6d9eeb;
+  --chart-3: #4a86db;
+  --chart-4: #a4c6fa;
+  --chart-5: #c3d9fc;
+  --sidebar:                     #000000;
+  --sidebar-foreground:          #a1a1aa;
+  --sidebar-primary:             #8ab4f8;
+  --sidebar-primary-foreground:  #000000;
+  --sidebar-accent:              rgba(138, 180, 248, 0.1);
+  --sidebar-accent-foreground:   #ffffff;
+  --sidebar-border:              #3f3f46;
+  --sidebar-ring:                #8ab4f8;
+}
+
+/* ── Tailwind @theme ── */
+@theme inline {
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-heading: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+
+  --color-background:           var(--background);
+  --color-foreground:           var(--foreground);
+  --color-card:                 var(--card);
+  --color-card-foreground:      var(--card-foreground);
+  --color-popover:              var(--popover);
+  --color-popover-foreground:   var(--popover-foreground);
+  --color-primary:              var(--primary);
+  --color-primary-foreground:   var(--primary-foreground);
+  --color-secondary:            var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted:                var(--muted);
+  --color-muted-foreground:     var(--muted-foreground);
+  --color-accent:               var(--accent);
+  --color-accent-foreground:    var(--accent-foreground);
+  --color-destructive:          var(--destructive);
+  --color-border:               var(--border);
+  --color-input:                var(--input);
+  --color-ring:                 var(--ring);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-sidebar:                     var(--sidebar);
+  --color-sidebar-foreground:          var(--sidebar-foreground);
+  --color-sidebar-primary:             var(--sidebar-primary);
+  --color-sidebar-primary-foreground:  var(--sidebar-primary-foreground);
+  --color-sidebar-accent:              var(--sidebar-accent);
+  --color-sidebar-accent-foreground:   var(--sidebar-accent-foreground);
+  --color-sidebar-border:              var(--sidebar-border);
+  --color-sidebar-ring:                var(--sidebar-ring);
+
+  --radius-sm:  calc(var(--radius) * 0.5);
+  --radius-md:  calc(var(--radius) * 0.75);
+  --radius-lg:  var(--radius);
+  --radius-xl:  calc(var(--radius) * 1.25);
+  --radius-2xl: calc(var(--radius) * 1.5);
+  --radius-3xl: calc(var(--radius) * 1.75);
+  --radius-4xl: calc(var(--radius) * 2);
+}
+
+/* ── Base styles ── */
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    box-sizing: border-box;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--sans);
+    margin: 0;
+  }
+
+  html {
+    @apply font-sans h-full w-full;
+  }
+
+  #root {
+    @apply h-full w-full;
+  }
+
+  /* Clean headings */
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--sans);
+    font-weight: 600;
+    color: var(--foreground);
+    line-height: 1.35;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+
+  p { margin: 0; }
+
+  code, pre {
+    font-family: var(--mono);
+    font-size: 0.8125rem;
+  }
+}
+
+/* ── Thin scrollbar ── */
+::-webkit-scrollbar         { width: 5px; height: 5px; }
+::-webkit-scrollbar-track   { background: transparent; }
+::-webkit-scrollbar-thumb   { background: #27272a; border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+
+/* ── Crisp focus ring ── */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* ── Stat card subtle glow on hover ── */
+.stat-card {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.stat-card:hover {
+  border-color: #3f3f46;
+  box-shadow: 0 0 0 1px rgba(138, 180, 248, 0.04);
+}
+
+/* ── Pulse dot animation ── */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.animate-pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* ── Subtle shine sweep for accent elements ── */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}

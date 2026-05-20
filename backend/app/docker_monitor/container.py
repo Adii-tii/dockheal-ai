@@ -1,6 +1,10 @@
 import docker
 
-client = docker.from_env()
+try:
+    client = docker.from_env()
+except Exception as e:
+    print(f"CRITICAL: Could not connect to Docker in container.py: {e}")
+    client = None
 
 def get_all_containers():
     containers = client.containers.list(all=True)
@@ -17,12 +21,17 @@ def get_all_containers():
             .get("Status", "no-healthcheck")
         )
 
+        restart_count = attrs.get("RestartCount", 0)
+        started_at = attrs.get("State", {}).get("StartedAt", None)
+
         result.append({
             "id": container.short_id,
             "name": container.name,
             "image": container.image.tags,
             "status": container.status,
-            "health": health
+            "health": health,
+            "restart_count": restart_count,
+            "started_at": started_at,
         })
 
     return result
