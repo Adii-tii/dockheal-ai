@@ -29,10 +29,10 @@ def set_ws_manager(manager) -> None:
 def send_alert_tool(
     container_name: str,
     message: str,
-    severity: str = "medium",
+    severity: str = "P2",
 ) -> ToolResult:
     # Sanitise inputs
-    severity = severity if severity in ("low", "medium", "high", "critical") else "medium"
+    severity = severity if severity in ("P0", "P1", "P2", "P3") else "P2"
     message  = str(message)[:500]   # hard cap — no prompt injection via message field
 
     alert = {

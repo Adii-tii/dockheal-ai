@@ -20,6 +20,9 @@ class PolicyRegistry:
     max_retries:         int  = 3      # hard-stop after this many attempts per window
     packet_max_age_secs: int  = 60     # reject stale context before non-safe tool exec
 
+    # ── Blocked Tools ────────────────────────────────────────────────────────────
+    blocked_tools:       list[str] = field(default_factory=list)
+
     # ── Severity gate (AI output is capped — AI cannot exceed this) ───────────────
     severity_gate:       int  = 80     # auto-escalate to human above this score
 
@@ -70,7 +73,21 @@ class PolicyRegistry:
         """Update policy values at runtime (e.g. from a future settings API)."""
         for k, v in kwargs.items():
             if hasattr(self, k):
-                setattr(self, k, v)
+                orig_val = getattr(self, k)
+                try:
+                    if isinstance(orig_val, bool):
+                        if isinstance(v, str):
+                            setattr(self, k, v.lower() in ("true", "1", "yes", "on"))
+                        else:
+                            setattr(self, k, bool(v))
+                    elif isinstance(orig_val, int):
+                        setattr(self, k, int(v))
+                    elif isinstance(orig_val, float):
+                        setattr(self, k, float(v))
+                    else:
+                        setattr(self, k, v)
+                except (ValueError, TypeError):
+                    pass
 
     def as_dict(self) -> dict:
         return asdict(self)

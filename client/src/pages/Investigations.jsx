@@ -12,7 +12,7 @@ import {
 } from "lucide-react"
 
 export default function Investigations() {
-  const { investigations, activeInvId, triggerInvestigation, lockContainer } = useStore()
+  const { investigations, activeInvId, triggerInvestigation, lockContainer, stopAllInvestigations, approveInvestigation, rejectInvestigation } = useStore()
   const useStoreSetActiveInvId = (id) => useStore.setState({ activeInvId: id })
   const thoughtsEndRef = useRef(null)
 
@@ -40,39 +40,19 @@ export default function Investigations() {
   const activeInv = activeInvId && investigations[activeInvId] ? investigations[activeInvId] : null
   const result = activeInv?.result
   const lifecycle = activeInv?.lifecycle || "DETECTED"
-  const STATES = ["DETECTED", "INVESTIGATING", "VALIDATING", "EXECUTING", "RESOLVED"]
+  const STATES = ["DETECTED", "INVESTIGATING", "RCA_IDENTIFIED", "AWAITING_APPROVAL", "RECOVERING", "MONITORING", "RESOLVED", "REJECTED"]
   const stateIdx = STATES.indexOf(lifecycle)
-  const isTerminal = ["RESOLVED", "ESCALATED", "BLOCKED"].includes(lifecycle)
+  const isTerminal = ["RESOLVED", "ESCALATED", "BLOCKED", "REJECTED"].includes(lifecycle)
 
-  const activeRecords = Object.values(investigations).filter(inv => !["RESOLVED"].includes(inv.lifecycle))
-  const historyRecords = Object.values(investigations).filter(inv => ["RESOLVED"].includes(inv.lifecycle))
+  const activeRecords = Object.values(investigations).filter(inv => !["RESOLVED", "REJECTED"].includes(inv.lifecycle))
+  const historyRecords = Object.values(investigations).filter(inv => ["RESOLVED", "REJECTED"].includes(inv.lifecycle))
 
   const tableRecords = activeTab === "Incident History" ? historyRecords : activeRecords
 
-  // Generate mock events for the AWS-style Events Table
+  // Pull structured timeline events from backend state
   const getEvents = () => {
-    if (!activeInv) return [];
-    let evts = [
-      { time: "May 17, 2026 21:32:43", type: "INFO", text: `Investigation triggered for container [${activeInv.container}]. Context gathered and AI initialized.` }
-    ];
-    if (activeInv.result) {
-       evts.push({ time: "May 17, 2026 21:32:45", type: "INFO", text: `Analysis complete. Root cause identified: ${activeInv.result.root_cause}` });
-       if (activeInv.result.execution_results) {
-         activeInv.result.execution_results.forEach((r, i) => {
-            evts.push({ 
-              time: `May 17, 2026 21:32:${47 + i}`, 
-              type: r.result?.success ? "SUCCESS" : "ERROR", 
-              text: `Tool [${r.tool}] executed. Outcome: ${r.outcome}. ${r.reason || ''}` 
-            });
-         })
-       }
-    }
-    if (activeInv.lifecycle === 'RESOLVED') {
-       evts.push({ time: "May 17, 2026 21:33:50", type: "SUCCESS", text: `Investigation resolved successfully.` });
-    } else if (activeInv.lifecycle === 'ESCALATED') {
-       evts.push({ time: "May 17, 2026 21:33:50", type: "ERROR", text: `Investigation escalated. Human review required before proceeding.` });
-    }
-    return evts.reverse();
+    if (!activeInv || !activeInv.timeline) return [];
+    return [...activeInv.timeline].reverse();
   };
 
   return (
@@ -99,6 +79,17 @@ export default function Investigations() {
                   <div className="flex items-center gap-2">
                     <span className="text-foreground font-medium">Status:</span> 
                     <span className="text-muted-foreground uppercase">{lifecycle}</span> 
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-foreground font-medium">Severity:</span> 
+                    <Badge className={`text-[10px] font-bold border-none px-2 py-0.5 rounded ${
+                      activeInv.severity === 'P0' ? 'bg-[#ea4335]/20 text-[#ea4335] border border-[#ea4335]/30' :
+                      activeInv.severity === 'P1' ? 'bg-[#ff9900]/20 text-[#ff9900] border border-[#ff9900]/30' :
+                      activeInv.severity === 'P2' ? 'bg-[#fbbc05]/20 text-[#fbbc05] border border-[#fbbc05]/30' :
+                      'bg-[#34a853]/20 text-[#34a853] border border-[#34a853]/30'
+                    }`}>
+                      {activeInv.severity || 'P2'}
+                    </Badge>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-foreground font-medium">ID:</span> 
@@ -189,14 +180,19 @@ export default function Investigations() {
                             <TableBody>
                               {getEvents().map((ev, i) => (
                                 <TableRow key={i} className="border-b border-[#3c4043] hover:bg-[#121212] cursor-pointer transition-colors">
-                                  <TableCell className="text-[#e8eaed] text-[13px] py-4 px-4 whitespace-nowrap">{ev.time}</TableCell>
+                                  <TableCell className="text-[#e8eaed] text-[13px] py-4 px-4 whitespace-nowrap">
+                                    {new Date(ev.timestamp).toLocaleString([], { dateStyle: 'short', timeStyle: 'medium' })}
+                                  </TableCell>
                                   <TableCell className="py-4 px-4">
-                                    <span className={`text-[12px] font-medium flex items-center gap-2 ${ev.type === 'ERROR' ? 'text-[#f28b82]' : ev.type === 'SUCCESS' ? 'text-[#81c995]' : 'text-[#8ab4f8]'}`}>
-                                       {ev.type === 'ERROR' ? <XCircle className="h-4 w-4" /> : ev.type === 'SUCCESS' ? <CheckCircle2 className="h-4 w-4" /> : <Info className="h-4 w-4" />}
+                                    <span className={`text-[12px] font-medium flex items-center gap-2 ${ev.severity === 'WARN' ? 'text-[#f28b82]' : ev.severity === 'INFO' ? 'text-[#8ab4f8]' : 'text-[#81c995]'}`}>
+                                       {ev.severity === 'WARN' ? <XCircle className="h-4 w-4" /> : ev.severity === 'SUCCESS' ? <CheckCircle2 className="h-4 w-4" /> : <Info className="h-4 w-4" />}
                                        {ev.type}
                                     </span>
                                   </TableCell>
-                                  <TableCell className="text-[#e8eaed] text-[13px] py-4 px-4 leading-relaxed max-w-4xl">{ev.text}</TableCell>
+                                  <TableCell className="text-[#e8eaed] text-[13px] py-4 px-4 leading-relaxed max-w-4xl">
+                                    <strong className="block mb-1 text-white">{ev.title}</strong>
+                                    {ev.description}
+                                  </TableCell>
                                 </TableRow>
                               ))}
                             </TableBody>
@@ -237,26 +233,51 @@ export default function Investigations() {
                   {detailTab === 'Actions & Analysis' && (
                     <div className="flex-1 flex flex-col min-h-0 overflow-y-auto pr-2 space-y-8">
                       
-                      {/* Final Verdict */}
-                      {result ? (
+                      {/* Final Verdict / RCA */}
+                      {result?.rca_report ? (
                         <div className="space-y-4">
-                          <h3 className="text-[14px] font-medium text-[#e8eaed] flex items-center gap-3">
-                            <BrainCircuit className="h-4 w-4 text-[#8ab4f8]" /> Final Verdict
-                          </h3>
-                          <div className="p-6 bg-[#000000] border border-[#3c4043] rounded-[8px]">
-                            <p className="text-[14px] text-[#e8eaed] leading-relaxed mb-6">{result.root_cause}</p>
-                            <div className="flex items-center gap-4 max-w-xl">
-                              <span className="text-[11px] text-[#9aa0a6] uppercase tracking-wider font-medium">Confidence Level</span>
-                              <div className="h-2 flex-1 bg-[#121212] border border-[#3c4043] rounded-full overflow-hidden">
-                                <div className="h-full rounded-full bg-[#8ab4f8] shadow-[0_0_10px_rgba(138,180,248,0.5)]" style={{ width: `${(result.confidence * 100).toFixed(0)}%` }} />
+                          <div className="flex items-center justify-between">
+                            <h3 className="text-[14px] font-medium text-[#e8eaed] flex items-center gap-3">
+                              <BrainCircuit className="h-4 w-4 text-[#8ab4f8]" /> Root Cause Analysis (v{result.rca_report.rca_version || 1})
+                            </h3>
+                            <Badge className="bg-[#8ab4f8]/10 text-[#8ab4f8] hover:bg-[#8ab4f8]/20 border-none px-3 py-1 font-mono">
+                              {(result.rca_report.confidence_score * 100).toFixed(0)}% Confidence
+                            </Badge>
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="p-6 bg-[#000000] border border-[#3c4043] rounded-[8px] space-y-6">
+                              <div>
+                                <h4 className="text-[11px] text-[#9aa0a6] uppercase tracking-wider font-medium mb-2">What Failed</h4>
+                                <p className="text-[13px] text-[#e8eaed] leading-relaxed">{result.rca_report.what_failed}</p>
                               </div>
-                              <span className="text-[12px] font-mono text-[#8ab4f8] font-semibold">{(result.confidence * 100).toFixed(0)}%</span>
+                              <div>
+                                <h4 className="text-[11px] text-[#9aa0a6] uppercase tracking-wider font-medium mb-2">Why It Happened</h4>
+                                <p className="text-[13px] text-[#e8eaed] leading-relaxed">{result.rca_report.why_it_happened}</p>
+                              </div>
+                              <div>
+                                <h4 className="text-[11px] text-[#9aa0a6] uppercase tracking-wider font-medium mb-2">Evidence Found</h4>
+                                <p className="text-[13px] text-[#e8eaed] leading-relaxed">{result.rca_report.evidence_found}</p>
+                              </div>
+                            </div>
+                            <div className="p-6 bg-[#000000] border border-[#3c4043] rounded-[8px] space-y-6">
+                              <div>
+                                <h4 className="text-[11px] text-[#9aa0a6] uppercase tracking-wider font-medium mb-2">Incident Summary</h4>
+                                <p className="text-[13px] text-[#e8eaed] leading-relaxed">{result.rca_report.incident_summary}</p>
+                              </div>
+                              <div>
+                                <h4 className="text-[11px] text-[#9aa0a6] uppercase tracking-wider font-medium mb-2">Contributing Factors</h4>
+                                <p className="text-[13px] text-[#e8eaed] leading-relaxed">{result.rca_report.contributing_factors}</p>
+                              </div>
+                              <div>
+                                <h4 className="text-[11px] text-[#9aa0a6] uppercase tracking-wider font-medium mb-2">Long-term Prevention</h4>
+                                <p className="text-[13px] text-[#e8eaed] leading-relaxed">{result.rca_report.long_term_prevention}</p>
+                              </div>
                             </div>
                           </div>
                         </div>
                       ) : (
                         <div className="flex items-center gap-4 text-[14px] text-[#9aa0a6] bg-[#000000] p-6 border border-[#3c4043] rounded-[8px]">
-                          <span className="inline-block w-3 h-3 rounded-full bg-[#8ab4f8] animate-ping shadow-[0_0_10px_rgba(138,180,248,0.5)]" /> Analyzing incident telemetry...
+                          <span className="inline-block w-3 h-3 rounded-full bg-[#8ab4f8] animate-ping shadow-[0_0_10px_rgba(138,180,248,0.5)]" /> Analyzing incident telemetry and generating RCA...
                         </div>
                       )}
 
@@ -271,20 +292,51 @@ export default function Investigations() {
                               <Badge className="text-[10px] px-3 py-1 bg-[#8ab4f8]/10 text-[#8ab4f8] border border-[#8ab4f8]/30 uppercase tracking-wider font-medium">Human Review Required</Badge>
                             )}
                           </div>
+
+                          {/* AI Explainability Summary */}
+                          {result.rca_report?.ai_reasoning_summary && (
+                            <div className="p-4 bg-[#8ab4f8]/5 border border-[#8ab4f8]/20 rounded-[8px] flex items-start gap-3">
+                              <BrainCircuit className="h-5 w-5 text-[#8ab4f8] shrink-0 mt-0.5" />
+                              <div>
+                                <span className="text-[11px] font-bold text-[#8ab4f8] uppercase tracking-wider block mb-1">AI Reasoning & Strategy</span>
+                                <p className="text-[13px] text-[#e8eaed] leading-relaxed">{result.rca_report.ai_reasoning_summary}</p>
+                              </div>
+                            </div>
+                          )}
+
                           <div className="grid grid-cols-1 gap-4">
                             {result.proposed_actions.map((action, i) => (
                               <div key={i} className="p-6 bg-[#000000] border border-[#3c4043] rounded-[8px] flex flex-col md:flex-row md:items-center justify-between gap-6">
                                 <div className="flex-1">
-                                  <span className="text-[14px] font-mono text-[#e8eaed] font-medium block mb-2">{action.tool}</span>
-                                  <p className="text-[13px] text-[#9aa0a6] leading-relaxed max-w-3xl">{action.rationale}</p>
+                                  <span className="text-[14px] font-mono text-[#8ab4f8] font-medium block mb-2">{action.tool}</span>
+                                  
+                                  {/* AI Explainability - Why chosen box */}
+                                  <div className="mt-3 p-3.5 bg-[#8ab4f8]/5 border-l-2 border-[#8ab4f8] rounded-r-[6px] shadow-sm">
+                                    <span className="text-[10px] text-[#9aa0a6] uppercase tracking-wider font-bold block mb-1">Why this action was recommended:</span>
+                                    <p className="text-[13px] text-[#e8eaed] leading-relaxed font-normal">{action.rationale}</p>
+                                  </div>
                                 </div>
                                 <div className="shrink-0">
-                                  {agentMode === 'Co-Pilot' ? (
-                                    <Button className="h-9 px-6 bg-[#8ab4f8] text-[#000000] text-[12px] font-bold hover:bg-[#8ab4f8]/90 rounded-[6px] shadow-[0_0_15px_rgba(138,180,248,0.3)]">Approve Action</Button>
-                                  ) : agentMode === 'Manual' ? (
-                                    <Button variant="outline" className="h-9 px-6 border-[#3c4043] text-[#8ab4f8] text-[12px] font-bold hover:bg-[#121212] hover:border-[#8ab4f8] rounded-[6px] transition-colors">Execute Manually</Button>
+                                  {lifecycle === 'AWAITING_APPROVAL' ? (
+                                    <div className="flex items-center gap-3">
+                                      <Button 
+                                        className="h-9 px-6 bg-[#81c995] text-[#000000] text-[12px] font-bold hover:bg-[#81c995]/90 rounded-[6px]"
+                                        onClick={() => approveInvestigation(activeInv.investigation_id)}
+                                      >
+                                        Approve & Execute
+                                      </Button>
+                                      <Button 
+                                        variant="outline"
+                                        className="h-9 px-6 border-[#f28b82]/30 text-[#f28b82] hover:bg-[#f28b82]/10 text-[12px] font-bold rounded-[6px]"
+                                        onClick={() => rejectInvestigation(activeInv.investigation_id)}
+                                      >
+                                        Reject
+                                      </Button>
+                                    </div>
+                                  ) : isTerminal ? (
+                                    <span className="text-[12px] text-[#9aa0a6] italic font-medium px-4">Execution completed or aborted.</span>
                                   ) : (
-                                    <span className="text-[12px] text-[#8ab4f8] italic font-medium px-4">Auto-executing...</span>
+                                    <span className="text-[12px] text-[#8ab4f8] italic font-medium px-4">Waiting for validation...</span>
                                   )}
                                 </div>
                               </div>
@@ -341,7 +393,21 @@ export default function Investigations() {
               <div className="flex-1 flex flex-col min-h-0 overflow-hidden px-2">
                 <div className="flex items-center justify-between mb-4">
                    <h3 className="text-[16px] font-medium text-[#e8eaed]">{activeTab} ({tableRecords.length})</h3>
-                   <div className="flex items-center gap-3 text-[#9aa0a6]">
+                   <div className="flex items-center gap-3">
+                     {activeTab === 'Active Investigations' && activeRecords.length > 0 && (
+                       <Button 
+                         size="sm" 
+                         variant="destructive" 
+                         className="h-8 px-4 bg-red-950 text-red-200 border border-red-800 hover:bg-red-900 text-[13px] font-medium flex items-center gap-2 rounded-[6px]"
+                         onClick={async () => {
+                           if (confirm("Are you sure you want to stop all active investigations?")) {
+                             await stopAllInvestigations();
+                           }
+                         }}
+                       >
+                         <Square className="h-3.5 w-3.5" /> Stop All Investigations
+                       </Button>
+                     )}
                      <Button size="icon" variant="ghost" className="h-8 w-8 hover:bg-[#3c4043]/30 rounded-full"><RefreshCw className="h-4 w-4" /></Button>
                      <Button size="icon" variant="ghost" className="h-8 w-8 hover:bg-[#3c4043]/30 rounded-full"><Settings2 className="h-4 w-4" /></Button>
                    </div>
@@ -361,6 +427,7 @@ export default function Investigations() {
                           </TableHead>
                           <TableHead className="text-[#9aa0a6] text-[12px] font-medium h-10 px-4">ID</TableHead>
                           <TableHead className="text-[#9aa0a6] text-[12px] font-medium h-10 px-4">Container</TableHead>
+                          <TableHead className="text-[#9aa0a6] text-[12px] font-medium h-10 px-4">Severity</TableHead>
                           <TableHead className="text-[#9aa0a6] text-[12px] font-medium h-10 px-4">Status</TableHead>
                           <TableHead className="text-[#9aa0a6] text-[12px] font-medium h-10 px-4">Action Required</TableHead>
                           <TableHead className="text-[#9aa0a6] text-[12px] font-medium h-10 px-4">Root Cause</TableHead>
@@ -377,10 +444,20 @@ export default function Investigations() {
                               <input type="checkbox" className="accent-[#8ab4f8] w-3 h-3 cursor-pointer" />
                             </TableCell>
                             <TableCell className="text-[#8ab4f8] font-mono text-[13px] py-4 px-4">
-                              {inv.investigation_id.slice(0, 8)}
+                              {(inv.investigation_id || '').slice(0, 8)}
                             </TableCell>
                             <TableCell className="text-[#e8eaed] text-[14px] font-medium py-4 px-4">
                               {inv.container}
+                            </TableCell>
+                            <TableCell className="py-4 px-4">
+                              <Badge className={`text-[10px] font-bold border-none px-2 py-0.5 rounded ${
+                                inv.severity === 'P0' ? 'bg-[#ea4335]/20 text-[#ea4335] border border-[#ea4335]/30' :
+                                inv.severity === 'P1' ? 'bg-[#ff9900]/20 text-[#ff9900] border border-[#ff9900]/30' :
+                                inv.severity === 'P2' ? 'bg-[#fbbc05]/20 text-[#fbbc05] border border-[#fbbc05]/30' :
+                                'bg-[#34a853]/20 text-[#34a853] border border-[#34a853]/30'
+                              }`}>
+                                {inv.severity || 'P2'}
+                              </Badge>
                             </TableCell>
                             <TableCell className="py-4 px-4">
                               <Badge className="text-[10px] border-none px-2 py-0.5 uppercase tracking-widest bg-[#8ab4f8]/10 text-[#8ab4f8] font-medium">

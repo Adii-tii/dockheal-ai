@@ -46,7 +46,7 @@ def detect_incidents():
 
             incidents.append({
                 "type": "ContainerStopped",
-                "severity": "medium",
+                "severity": "P2",
                 "container": name,
                 "message": f"{name} exited unexpectedly"
             })
@@ -60,7 +60,7 @@ def detect_incidents():
 
             incidents.append({
                 "type": "UnhealthyContainer",
-                "severity": "high",
+                "severity": "P1",
                 "container": name,
                 "message": f"{name} failed healthcheck"
             })

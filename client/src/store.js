@@ -22,6 +22,9 @@ export const useStore = create((set, get) => ({
   // ── Policies ──────────────────────────────────────────────────────────────
   policies: null,
 
+  // ── Sandbox Tools ─────────────────────────────────────────────────────────
+  sandboxTools: [],
+
   // ── Stats ─────────────────────────────────────────────────────────────────
   stats: {
     successfulRemediations: 0,
@@ -36,19 +39,32 @@ export const useStore = create((set, get) => ({
 
   fetchData: async () => {
     try {
-      const [cRes, iRes, mRes] = await Promise.all([
+      const [cRes, iRes, mRes, invRes] = await Promise.all([
         fetch(`${API}/containers`),
         fetch(`${API}/incidents`),
         fetch(`${API}/containers/metrics`),
+        fetch(`${API}/investigations`),
       ])
       const containers = await cRes.json()
       const incidents  = await iRes.json()
       const metricsArr = await mRes.json()
+      const investigationsRaw = await invRes.json()
+
+      // Ensure every entry has investigation_id from its dictionary key
+      const investigations = {}
+      for (const [id, val] of Object.entries(investigationsRaw)) {
+        investigations[id] = {
+          ...val,
+          investigation_id: id,
+          lifecycle: val.state || val.lifecycle,
+          result: val.final_result || val.result
+        }
+      }
 
       const metrics = {}
       for (const m of metricsArr) metrics[m.name] = m
 
-      set({ containers, incidents, metrics, loading: false })
+      set({ containers, incidents, metrics, investigations, loading: false })
     } catch (e) {
       console.error('fetchData failed', e)
       set({ loading: false })
@@ -71,6 +87,51 @@ export const useStore = create((set, get) => ({
     } catch (e) { console.error('fetchPolicies failed', e) }
   },
 
+  updatePolicies: async (updatedPayload) => {
+    try {
+      const res = await fetch(`${API}/policies`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedPayload),
+      })
+      const data = await res.json()
+      set({ policies: data })
+      get().pushActivity({ level: 'INFO', message: 'Operational policies updated successfully.' })
+    } catch (e) {
+      console.error('updatePolicies failed', e)
+    }
+  },
+
+  fetchSandboxTools: async () => {
+    try {
+      const res = await fetch(`${API}/sandbox/tools`)
+      const data = await res.json()
+      set({ sandboxTools: data })
+    } catch (e) { console.error('fetchSandboxTools failed', e) }
+  },
+
+  blockSandboxTool: async (toolName) => {
+    get().pushActivity({ level: 'SAFEGUARD', message: `Blocking tool in sandbox: ${toolName}` })
+    try {
+      const res = await fetch(`${API}/sandbox/tools/${toolName}/block`, { method: 'POST' })
+      if (res.ok) {
+        get().fetchSandboxTools()
+        get().fetchPolicies()
+      }
+    } catch (e) { console.error('blockSandboxTool failed', e) }
+  },
+
+  unblockSandboxTool: async (toolName) => {
+    get().pushActivity({ level: 'INFO', message: `Unblocking tool in sandbox: ${toolName}` })
+    try {
+      const res = await fetch(`${API}/sandbox/tools/${toolName}/unblock`, { method: 'POST' })
+      if (res.ok) {
+        get().fetchSandboxTools()
+        get().fetchPolicies()
+      }
+    } catch (e) { console.error('unblockSandboxTool failed', e) }
+  },
+
   triggerInvestigation: async (containerName) => {
     get().pushActivity({ level: 'AI', message: `AI investigation started for ${containerName}` })
     try {
@@ -78,6 +139,36 @@ export const useStore = create((set, get) => ({
       if (!res.ok) throw new Error(await res.text())
     } catch (e) {
       console.error('triggerInvestigation failed', e)
+    }
+  },
+
+  stopAllInvestigations: async () => {
+    get().pushActivity({ level: 'AI', message: `Stopping all AI investigations...` })
+    try {
+      const res = await fetch(`${API}/investigations/stop-all`, { method: 'POST' })
+      if (!res.ok) throw new Error(await res.text())
+    } catch (e) {
+      console.error('stopAllInvestigations failed', e)
+    }
+  },
+
+  approveInvestigation: async (investigationId) => {
+    get().pushActivity({ level: 'INFO', message: `Approving investigation ${investigationId}` })
+    try {
+      const res = await fetch(`${API}/investigations/${investigationId}/approve`, { method: 'POST' })
+      if (!res.ok) throw new Error(await res.text())
+    } catch (e) {
+      console.error('approveInvestigation failed', e)
+    }
+  },
+
+  rejectInvestigation: async (investigationId) => {
+    get().pushActivity({ level: 'SAFEGUARD', message: `Rejecting investigation ${investigationId}` })
+    try {
+      const res = await fetch(`${API}/investigations/${investigationId}/reject`, { method: 'POST' })
+      if (!res.ok) throw new Error(await res.text())
+    } catch (e) {
+      console.error('rejectInvestigation failed', e)
     }
   },
 
@@ -136,12 +227,32 @@ export const useStore = create((set, get) => ({
               investigation_id: data.investigation_id,
               container: data.container,
               lifecycle: data.to_state,
+              severity: data.severity || s.investigations[data.investigation_id]?.severity,
               startedAt: s.investigations[data.investigation_id]?.startedAt || new Date().toISOString(),
             }
           },
           activeInvId: data.investigation_id,
         }))
         pushActivity({ level: 'AI', message: `Investigation ${data.to_state}: ${data.container}` })
+        break
+
+      case 'AI_TIMELINE_EVENT':
+        set(s => {
+          const inv = s.investigations[data.investigation_id] || { timeline: [] }
+          const timeline = [...(inv.timeline || [])]
+          if (!timeline.some(e => e.timestamp === data.event.timestamp && e.type === data.event.type)) {
+            timeline.push(data.event)
+          }
+          return {
+            investigations: {
+              ...s.investigations,
+              [data.investigation_id]: {
+                ...inv,
+                timeline
+              }
+            }
+          }
+        })
         break
 
       case 'AI_THOUGHT':

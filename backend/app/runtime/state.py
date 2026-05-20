@@ -11,6 +11,15 @@ context_store: dict = {}
 # keyed by investigation_id → InvestigationState dict
 investigation_states: dict = {}
 
+# Active investigation asyncio Tasks (keyed by investigation_id → asyncio.Task)
+active_tasks: dict = {}
+
+# Approval state sync: keyed by investigation_id → asyncio.Event
+approval_events: dict = {}
+
+# Approval results: keyed by investigation_id → {"status": "approved" | "rejected", "user": str, "timestamp": str}
+approval_results: dict = {}
+
 # Per-container lock to prevent race conditions on concurrent incident triggers
 # keyed by container_name → threading.Lock
 import threading

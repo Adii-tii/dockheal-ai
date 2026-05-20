@@ -21,7 +21,7 @@ Packet schema
 
   "incident": {
     "type":       str,
-    "severity":   "low" | "medium" | "high" | "critical",
+    "severity":   "P0" | "P1" | "P2" | "P3",
     "container":  str,
     "message":    str,
     "triggered_at": ISO-8601 UTC,
@@ -303,7 +303,7 @@ def build_investigation_packet(container_name: str, incident: dict) -> dict:
 
         "incident": {
             "type":         incident.get("type", "Unknown"),
-            "severity":     incident.get("severity", "medium"),
+            "severity":     incident.get("severity", "P2"),
             "container":    container_name,
             "message":      incident.get("message", ""),
             "triggered_at": now,

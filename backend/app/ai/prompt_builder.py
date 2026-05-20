@@ -30,22 +30,27 @@ _OUTPUT_SCHEMA = """
 {
   "investigation_id": "<string — copy from context>",
   "container":        "<string — container name>",
-  "reason_for_restart": "<string — single sentence explaining why intervention was needed>",
-  "root_cause":       "<string — single sentence, ≤200 chars>",
-  "confidence":       <float 0.0–1.0>,
-  "evidence_citations": [
-    "<field_name: quoted value or observation>"
-  ],
+  "rca_report": {
+      "rca_version": 1,
+      "incident_summary": "<string — max 120 chars>",
+      "impact_assessment": "<string — max 120 chars>",
+      "what_failed": "<string — max 120 chars>",
+      "evidence_found": "<string — max 150 chars>",
+      "why_it_happened": "<string — max 150 chars>",
+      "contributing_factors": "<string — max 120 chars>",
+      "action_proposed": "<string — max 120 chars>",
+      "recovery_status": "<string — max 120 chars>",
+      "long_term_prevention": "<string — max 150 chars>",
+      "confidence_score": <float between 0.0 and 1.0>,
+      "ai_reasoning_summary": "<string — max 150 chars>"
+  },
   "proposed_actions": [
     {
       "tool":        "<tool name from available_tools>",
       "parameters":  { "<param>": "<value>" },
-      "rationale":   "<≤100 chars citing a specific evidence_citation>",
+      "rationale":   "<string — max 100 chars>",
       "risk_level":  "<safe|low|medium|high>"
     }
-  ],
-  "preventive_recommendations": [
-    "<string — action to prevent recurrence>"
   ],
   "requires_human": <true|false>
 }
@@ -55,13 +60,12 @@ _SYSTEM_TEMPLATE = """\
 You are DockHeal's diagnostic engine. Your ONLY function is Docker container incident Root Cause Analysis (RCA).
 
 ═══ ROLE CONSTRAINTS ═══
-- Base EVERY claim on the operational context below. Cite the specific field name.
+- Base EVERY claim on the operational context below. Cite the specific field name in your evidence_found block.
 - Do NOT speculate about causes absent from the telemetry.
 - Do NOT suggest actions for tools not listed in available_tools.
-- Always populate reason_for_restart using recovery_attempt.restart_reason from context if available.
-- Always populate preventive_recommendations, even if recovery succeeded.
-- Use recovery_attempt.success to decide whether to propose additional actions.
-- If confidence < 0.5: set requires_human=true, set proposed_actions=[].
+- Always populate long_term_prevention, even if recovery succeeded.
+- If confidence_score < 0.5: set requires_human=true, set proposed_actions=[].
+- Set rca_version to 1 for initial analysis. If this is a re-evaluation or deep loop, increment it if provided in context.
 - Output ONLY the JSON schema. Zero prose outside the JSON block.
 
 ═══ AVAILABLE TOOLS ═══

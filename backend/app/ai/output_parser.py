@@ -50,16 +50,32 @@ class MCPToolCallSchema(BaseModel):
         return v
 
 
+class RCAReportSchema(BaseModel):
+    rca_version:          int = Field(default=1)
+    incident_summary:     str = Field(default="", max_length=250)
+    impact_assessment:    str = Field(default="", max_length=250)
+    what_failed:          str = Field(default="", max_length=250)
+    evidence_found:       str = Field(default="", max_length=250)
+    why_it_happened:      str = Field(default="", max_length=250)
+    contributing_factors: str = Field(default="", max_length=250)
+    action_proposed:      str = Field(default="", max_length=250)
+    recovery_status:      str = Field(default="", max_length=250)
+    long_term_prevention: str = Field(default="", max_length=250)
+    confidence_score:     float = Field(default=1.0)
+    ai_reasoning_summary: str = Field(default="", max_length=250)
+
+
 class StructuredAIOutput(BaseModel):
     investigation_id:   str
     container:          str
     reason_for_restart: str = Field(default="")
-    root_cause:         str   = Field(max_length=250)
-    confidence:         float = Field(ge=0.0, le=1.0)
-    evidence_citations: list[str]
-    proposed_actions:   list[MCPToolCallSchema]
+    root_cause:         str   = Field(default="", max_length=250)
+    confidence:         float = Field(default=1.0, ge=0.0, le=1.0)
+    evidence_citations: list[str] = Field(default_factory=list)
+    proposed_actions:   list[MCPToolCallSchema] = Field(default_factory=list)
     preventive_recommendations: list[str] = Field(default_factory=list)
-    requires_human:     bool
+    requires_human:     bool = Field(default=True)
+    rca_report:         RCAReportSchema | None = None
 
     @field_validator("proposed_actions")
     @classmethod

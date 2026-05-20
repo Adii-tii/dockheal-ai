@@ -118,7 +118,7 @@ async def get_context(container_name: str):
         return context_store[container_name]
     packet = build_investigation_packet(
         container_name,
-        incident={"type": "ManualInspection", "severity": "low", "message": "On-demand context request"},
+        incident={"type": "ManualInspection", "severity": "P3", "message": "On-demand context request"},
     )
     if packet["container_state"].get("status") == "not_found":
         raise HTTPException(status_code=404, detail=f"Container '{container_name}' not found")
@@ -130,7 +130,7 @@ async def get_context(container_name: str):
 async def force_build_context(container_name: str):
     packet = build_investigation_packet(
         container_name,
-        incident={"type": "ManualInspection", "severity": "low", "message": "Force-rebuilt by operator"},
+        incident={"type": "ManualInspection", "severity": "P3", "message": "Force-rebuilt by operator"},
     )
     if packet["container_state"].get("status") == "not_found":
         raise HTTPException(status_code=404, detail=f"Container '{container_name}' not found")
@@ -142,12 +142,21 @@ async def force_build_context(container_name: str):
 
 @app.post("/investigate/{container_name}")
 async def trigger_investigation(container_name: str):
-    if container_name in context_store:
+    from app.runtime.state import investigation_states
+    
+    # Check if there is an active (non-terminal) investigation for this container name
+    active_inv = None
+    for inv_id, inv in list(investigation_states.items()):
+        if inv.get("container") == container_name and inv.get("state") not in ["RESOLVED", "REJECTED", "ESCALATED", "BLOCKED"]:
+            active_inv = inv_id
+            break
+
+    if active_inv and container_name in context_store:
         packet = context_store[container_name]
     else:
         packet = build_investigation_packet(
             container_name,
-            incident={"type": "ManualInvestigation", "severity": "medium", "message": "Operator-triggered"},
+            incident={"type": "ManualInvestigation", "severity": "P2", "message": "Operator-triggered"},
         )
         if packet["container_state"].get("status") == "not_found":
             raise HTTPException(status_code=404, detail=f"Container '{container_name}' not found")
@@ -160,12 +169,44 @@ async def trigger_investigation(container_name: str):
     return result
 
 
+@app.post("/investigations/{investigation_id}/approve")
+async def approve_investigation(investigation_id: str, user: str = "Operator"):
+    from app.runtime.state import approval_events, approval_results, investigation_states
+    
+    if investigation_id not in approval_events:
+        raise HTTPException(status_code=404, detail="Investigation not awaiting approval")
+        
+    approval_results[investigation_id] = {
+        "status": "approved",
+        "user": user,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    approval_events[investigation_id].set()
+    return {"status": "approved"}
+
+
+@app.post("/investigations/{investigation_id}/reject")
+async def reject_investigation(investigation_id: str, user: str = "Operator"):
+    from app.runtime.state import approval_events, approval_results, investigation_states
+    
+    if investigation_id not in approval_events:
+        raise HTTPException(status_code=404, detail="Investigation not awaiting approval")
+        
+    approval_results[investigation_id] = {
+        "status": "rejected",
+        "user": user,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    approval_events[investigation_id].set()
+    return {"status": "rejected"}
+
+
 @app.get("/investigate/{container_name}/stream")
 async def stream_investigation(container_name: str):
     if container_name not in context_store:
         packet = build_investigation_packet(
             container_name,
-            incident={"type": "ManualInvestigation", "severity": "medium", "message": "SSE-triggered"},
+            incident={"type": "ManualInvestigation", "severity": "P2", "message": "SSE-triggered"},
         )
         if packet["container_state"].get("status") == "not_found":
             raise HTTPException(status_code=404, detail=f"Container '{container_name}' not found")
@@ -213,6 +254,16 @@ async def get_investigations():
     return investigation_states
 
 
+@app.post("/investigations/stop-all")
+async def stop_all_investigations():
+    from app.runtime.state import active_tasks
+    cancelled_count = len(active_tasks)
+    for inv_id, task in list(active_tasks.items()):
+        if not task.done():
+            task.cancel()
+    return {"status": "ok", "cancelled_count": cancelled_count}
+
+
 @app.get("/investigations/{investigation_id}")
 async def get_investigation(investigation_id: str):
     state = investigation_states.get(investigation_id)
@@ -234,3 +285,56 @@ async def get_policies():
         "manually_stopped":    list(manually_stopped),
     })
     return data
+
+
+@app.put("/policies")
+async def update_policies(payload: dict):
+    from app.runtime.policy_registry import POLICIES
+    from app.runtime.state import operator_lock, manually_stopped
+    
+    # Filter out metadata fields not stored in POLICIES
+    policy_payload = {k: v for k, v in payload.items() if k not in ("operator_locked", "manually_stopped")}
+    POLICIES.update(**policy_payload)
+    
+    data = POLICIES.as_dict()
+    data.update({
+        "operator_locked":     list(operator_lock),
+        "manually_stopped":    list(manually_stopped),
+    })
+    return data
+
+
+# ── Sandbox Tools Controls ────────────────────────────────────────────────────
+
+@app.get("/sandbox/tools")
+async def get_sandbox_tools():
+    from app.ai.tools.decorator import TOOL_METADATA
+    from app.runtime.policy_registry import POLICIES
+    
+    return [
+        {
+            "name": meta["name"],
+            "description": meta["description"],
+            "allowed_params": meta["allowed_params"],
+            "risk_level": meta["risk_level"],
+            "phase": meta["phase"],
+            "blocked": meta["name"] in POLICIES.blocked_tools,
+        }
+        for meta in TOOL_METADATA.values()
+    ]
+
+
+@app.post("/sandbox/tools/{tool_name}/block")
+async def block_sandbox_tool(tool_name: str):
+    from app.runtime.policy_registry import POLICIES
+    if tool_name not in POLICIES.blocked_tools:
+        POLICIES.blocked_tools.append(tool_name)
+    return {"status": "ok", "blocked_tools": POLICIES.blocked_tools}
+
+
+@app.post("/sandbox/tools/{tool_name}/unblock")
+async def unblock_sandbox_tool(tool_name: str):
+    from app.runtime.policy_registry import POLICIES
+    if tool_name in POLICIES.blocked_tools:
+        POLICIES.blocked_tools.remove(tool_name)
+    return {"status": "ok", "blocked_tools": POLICIES.blocked_tools}

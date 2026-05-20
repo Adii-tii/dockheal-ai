@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { SlidersHorizontal, X } from "lucide-react"
 import { useStore } from "../store"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
@@ -31,6 +32,11 @@ export default function Dashboard() {
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState('Dashboard')
   const [timelineContainer, setTimelineContainer] = useState('All')
+  
+  // Graph filtering states
+  const [deselectedContainers, setDeselectedContainers] = useState([])
+  const [maxVisible, setMaxVisible] = useState(5)
+  const [isFilterModalOpen, setIsFilterModalOpen] = useState(false)
 
   const runningCount = containers.filter(c => c.status === "running").length
   const activeIncidentsCount = incidents.length // Could filter by unresolved if tracking
@@ -56,6 +62,11 @@ export default function Dashboard() {
       restarts: m.restart_count || 0,
     }
   })
+
+  // Filtered chart data based on selected containers and max limit
+  const filteredChartData = chartData
+    .filter(item => !deselectedContainers.includes(item.fullName))
+    .slice(0, maxVisible)
 
   const statusData = [
     { name: 'Running', value: containers.filter(c => c.status === 'running').length },
@@ -127,7 +138,7 @@ export default function Dashboard() {
 
           {activeTab === 'Dashboard' ? (
             <>
-              <div className="flex flex-wrap items-center gap-3 mb-8">
+              <div className="flex flex-wrap items-center gap-3 mb-8 w-full relative">
             <Button variant="outline" className="h-8 px-3 py-1 text-[13px] font-medium text-[#8ab4f8] border border-[#5f6368] rounded bg-transparent hover:bg-[#8ab4f8]/10 flex items-center gap-2">
               Scan Infrastructure
             </Button>
@@ -140,7 +151,129 @@ export default function Dashboard() {
             <Button variant="outline" className="h-8 px-3 py-1 text-[13px] font-medium text-[#8ab4f8] border border-[#5f6368] rounded bg-transparent hover:bg-[#8ab4f8]/10 flex items-center gap-2">
               Enable Safe Mode
             </Button>
+            <Button 
+              onClick={() => setIsFilterModalOpen(!isFilterModalOpen)}
+              variant="outline" 
+              className="h-8 px-3 py-1 text-[13px] font-medium text-[#8ab4f8] border border-[#8ab4f8]/30 hover:border-[#8ab4f8] rounded bg-transparent hover:bg-[#8ab4f8]/10 flex items-center gap-2 md:ml-auto"
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              <span>Filters & Limits</span>
+              {deselectedContainers.length > 0 && (
+                <span className="ml-1 px-1.5 py-0.5 text-[10px] bg-[#8ab4f8] text-[#000000] rounded-full font-bold">
+                  {containers.length - deselectedContainers.length}
+                </span>
+              )}
+            </Button>
+
+            {/* Floating Filters Popover Modal */}
+            {isFilterModalOpen && (
+              <>
+                {/* Transparent Click-Outside Overlay to Close */}
+                <div 
+                  className="fixed inset-0 z-40 bg-transparent"
+                  onClick={() => setIsFilterModalOpen(false)}
+                />
+                
+                {/* Popover Card */}
+                <div className="absolute right-0 top-10 w-72 bg-[#000000] border border-[#3c4043] rounded-[6px] shadow-[0_4px_20px_rgba(0,0,0,0.8)] z-50 p-4 flex flex-col gap-4">
+                  <div className="flex items-center justify-between border-b border-[#3c4043] pb-2 shrink-0">
+                    <div className="flex items-center gap-1.5">
+                      <SlidersHorizontal className="h-3.5 w-3.5 text-[#8ab4f8]" />
+                      <span className="text-[12px] font-semibold text-[#e8eaed]">Graph Controls</span>
+                    </div>
+                    <button 
+                      onClick={() => setIsFilterModalOpen(false)}
+                      className="text-[#9aa0a6] hover:text-[#e8eaed] cursor-pointer text-[12px] font-semibold bg-transparent border-none p-0 focus:outline-none"
+                    >
+                      Close
+                    </button>
+                  </div>
+
+                  {/* Limit visible containers */}
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[11px] font-medium text-[#9aa0a6]">Max Containers Visible:</span>
+                    <div className="flex items-center bg-[#121212] border border-[#3c4043] rounded-[4px] p-0.5 w-full justify-between">
+                      {[1, 2, 3, 4, 5].map(n => (
+                        <button
+                          key={n}
+                          onClick={() => setMaxVisible(n)}
+                          className={`flex-1 py-1 text-[11px] font-medium transition-colors rounded-[3px] cursor-pointer ${
+                            maxVisible === n 
+                              ? 'bg-[#8ab4f8] text-[#000000] font-bold' 
+                              : 'text-[#9aa0a6] hover:text-[#e8eaed]'
+                          }`}
+                        >
+                          {n}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Containers selector list */}
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-medium text-[#9aa0a6]">Filter Containers:</span>
+                      <div className="flex gap-1.5">
+                        <button 
+                          onClick={() => setDeselectedContainers([])} 
+                          className="text-[10px] text-[#8ab4f8] hover:underline cursor-pointer bg-transparent border-none p-0"
+                        >
+                          All
+                        </button>
+                        <span className="text-[#3c4043] text-[10px]">•</span>
+                        <button 
+                          onClick={() => setDeselectedContainers(containers.map(c => c.name))} 
+                          className="text-[10px] text-[#8ab4f8] hover:underline cursor-pointer bg-transparent border-none p-0"
+                        >
+                          None
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-1 max-h-[160px] overflow-y-auto border border-[#3c4043] rounded-[4px] bg-[#121212] p-1.5">
+                      {containers.map(c => {
+                        const isSelected = !deselectedContainers.includes(c.name);
+                        return (
+                          <div 
+                            key={c.name}
+                            onClick={() => {
+                              setDeselectedContainers(prev => 
+                                prev.includes(c.name) 
+                                  ? prev.filter(name => name !== c.name) 
+                                  : [...prev, c.name]
+                              );
+                            }}
+                            className={`flex items-center justify-between px-2 py-1 rounded-[3px] cursor-pointer transition-colors ${
+                              isSelected ? 'bg-[#8ab4f8]/5 hover:bg-[#8ab4f8]/10' : 'hover:bg-[#202124]'
+                            }`}
+                          >
+                            <span className={`text-[11px] ${isSelected ? 'text-[#e8eaed]' : 'text-[#9aa0a6]'}`}>{c.name}</span>
+                            <div className={`h-3.5 w-3.5 rounded border flex items-center justify-center transition-all ${
+                              isSelected 
+                                ? 'bg-[#8ab4f8] border-[#8ab4f8]' 
+                                : 'border-[#5f6368] bg-transparent'
+                            }`}>
+                              {isSelected && <span className="text-[#000000] text-[9px] font-bold">✓</span>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
+
+
+
+          {/* Graph Limitation Tip */}
+          {containers.filter(c => !deselectedContainers.includes(c.name)).length > maxVisible && (
+            <div className="text-[12px] text-[#9aa0a6] bg-[#8ab4f8]/5 border border-[#8ab4f8]/20 p-2.5 rounded-[6px] mb-6 flex items-center gap-2">
+              <span className="text-[#8ab4f8]">💡</span>
+              Showing the first <span className="font-semibold text-[#8ab4f8]">{maxVisible}</span> of <span className="font-semibold text-[#e8eaed]">{containers.filter(c => !deselectedContainers.includes(c.name)).length}</span> selected containers. Adjust "Max Containers" or toggle filters to view others.
+            </div>
+          )}
 
           {/* Telemetry Graphs */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
@@ -149,7 +282,7 @@ export default function Dashboard() {
               <h3 className="text-[13px] font-medium text-[#e8eaed] mb-4">CPU Usage (%)</h3>
               <div className="flex-1 min-h-0">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData} margin={{ top: 0, right: 0, left: -25, bottom: 0 }}>
+                  <BarChart data={filteredChartData} margin={{ top: 0, right: 0, left: -25, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#3c4043" vertical={false} />
                     <XAxis dataKey="name" stroke="#9aa0a6" fontSize={10} tickLine={false} axisLine={false} />
                     <YAxis stroke="#9aa0a6" fontSize={10} tickLine={false} axisLine={false} />
@@ -165,7 +298,7 @@ export default function Dashboard() {
               <h3 className="text-[13px] font-medium text-[#e8eaed] mb-4">Memory Usage (MB)</h3>
               <div className="flex-1 min-h-0">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData} margin={{ top: 0, right: 0, left: -15, bottom: 0 }}>
+                  <BarChart data={filteredChartData} margin={{ top: 0, right: 0, left: -15, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#3c4043" vertical={false} />
                     <XAxis dataKey="name" stroke="#9aa0a6" fontSize={10} tickLine={false} axisLine={false} />
                     <YAxis stroke="#9aa0a6" fontSize={10} tickLine={false} axisLine={false} />
@@ -181,7 +314,7 @@ export default function Dashboard() {
               <h3 className="text-[13px] font-medium text-[#e8eaed] mb-4">Restart Count</h3>
               <div className="flex-1 min-h-0">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData} margin={{ top: 0, right: 0, left: -25, bottom: 0 }}>
+                  <BarChart data={filteredChartData} margin={{ top: 0, right: 0, left: -25, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#3c4043" vertical={false} />
                     <XAxis dataKey="name" stroke="#9aa0a6" fontSize={10} tickLine={false} axisLine={false} />
                     <YAxis stroke="#9aa0a6" fontSize={10} tickLine={false} axisLine={false} allowDecimals={false} />
@@ -348,6 +481,8 @@ export default function Dashboard() {
           )}
         </div>
       </ScrollArea>
+
+
     </div>
   )
 }

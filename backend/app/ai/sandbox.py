@@ -69,6 +69,11 @@ def validate(tool_name: str, parameters: dict, packet: dict) -> SandboxResult:
     low tools  → lightweight checks, auto-approve if passing.
     medium/high → return approved=False (guardrails handle human gate).
     """
+    # First check: Is the tool blocked in settings?
+    from app.runtime.policy_registry import POLICIES
+    if tool_name in getattr(POLICIES, "blocked_tools", []):
+        return _no(f"Tool '{tool_name}' is blocked by operator sandbox configuration.")
+
     from app.ai.tools.decorator import TOOL_METADATA
     meta = TOOL_METADATA.get(tool_name, {})
     risk = meta.get("risk_level", "high")

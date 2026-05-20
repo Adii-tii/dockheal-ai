@@ -51,8 +51,7 @@ _TEMPERATURE     = 0.2
 _MAX_TOKENS      = 1024   # reasoning streams; final JSON is compact
 
 # ── Lifecycle state transitions ────────────────────────────────────────────────
-LIFECYCLE_STATES = ["DETECTED", "INVESTIGATING", "VALIDATING", "EXECUTING", "RESOLVED",
-                    "ESCALATED", "BLOCKED"]
+LIFECYCLE_STATES = ["DETECTED", "INVESTIGATING", "RCA_IDENTIFIED", "AWAITING_APPROVAL", "RECOVERING", "MONITORING", "RESOLVED", "REJECTED"]
 
 
 def _set_state(investigation_id: str, state: str, extra: dict | None = None) -> dict:
@@ -63,6 +62,36 @@ def _set_state(investigation_id: str, state: str, extra: dict | None = None) -> 
         entry.update(extra)
     investigation_states[investigation_id] = entry
     return entry
+
+
+async def append_timeline_event(
+    investigation_id: str,
+    event_type: str,
+    title: str,
+    description: str,
+    source: str,
+    severity: str,
+    broadcast: Callable,
+) -> None:
+    event = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "type": event_type,
+        "title": title,
+        "description": description,
+        "source": source,
+        "severity": severity,
+    }
+    entry = investigation_states.get(investigation_id, {})
+    if "timeline" not in entry:
+        entry["timeline"] = []
+    entry["timeline"].append(event)
+    investigation_states[investigation_id] = entry
+    
+    await broadcast({
+        "type": "AI_TIMELINE_EVENT",
+        "investigation_id": investigation_id,
+        "event": event
+    })
 
 
 async def investigate(
@@ -83,216 +112,303 @@ async def investigate(
     container_name   = packet.get("incident", {}).get("container", "unknown")
     score            = packet.get("assessment", {}).get("severity_score", 0)
 
-    # ── Lifecycle: INVESTIGATING ───────────────────────────────────────────────
-    _set_state(investigation_id, "INVESTIGATING", {"container": container_name})
-    await broadcast({
-        "type":             "AI_LIFECYCLE",
-        "investigation_id": investigation_id,
-        "container":        container_name,
-        "from_state":       "DETECTED",
-        "to_state":         "INVESTIGATING",
-    })
+    # Register the task
+    current_task = asyncio.current_task()
+    from app.runtime.state import active_tasks
+    active_tasks[investigation_id] = current_task
 
-    if not _API_KEY:
-        result = {
-            "investigation_id": investigation_id,
-            "container":        container_name,
-            "root_cause":       "Mistral API key not configured.",
-            "confidence":       0.0,
-            "evidence_citations": [],
-            "proposed_actions": [],
-            "requires_human":   True,
-        }
-        await _finish(investigation_id, container_name, result, broadcast, lifecycle="ESCALATED")
-        return result
-
-    # ── Model selection ────────────────────────────────────────────────────────
-    model = _MODEL_ESCALATED if score >= 60 else _MODEL_STANDARD
-
-    # ── Build prompt ───────────────────────────────────────────────────────────
-    system_prompt = build_system_prompt(packet)
-    user_message  = build_user_message(container_name)
-
-    messages = [
-        {"role": "system",  "content": system_prompt},
-        {"role": "user",    "content": user_message},
-    ]
-
-    # ── Stream Mistral response ────────────────────────────────────────────────
-    full_text = await _stream_mistral(
-        messages          = messages,
-        model             = model,
-        investigation_id  = investigation_id,
-        container_name    = container_name,
-        broadcast         = broadcast,
-    )
-
-    # ── Parse output ───────────────────────────────────────────────────────────
-    ai_result = parse_output(full_text, investigation_id, container_name)
-
-    # ── Retry if parse failed ──────────────────────────────────────────────────
-    if ai_result.get("_parse_error"):
-        await broadcast({
-            "type":             "AI_THOUGHT",
-            "investigation_id": investigation_id,
-            "container":        container_name,
-            "chunk":            "[Retrying — output schema validation failed]",
-            "sequence":         9999,
+    try:
+        # ── Lifecycle: INVESTIGATING ───────────────────────────────────────────────
+        severity = packet.get("incident", {}).get("severity", "P2")
+        _set_state(investigation_id, "INVESTIGATING", {
+            "container": container_name,
+            "severity": severity
         })
+        await broadcast({
+            "type":             "AI_LIFECYCLE",
+            "investigation_id": investigation_id,
+            "container":        container_name,
+            "severity":         severity,
+            "from_state":       "DETECTED",
+            "to_state":         "INVESTIGATING",
+        })
+        await append_timeline_event(investigation_id, "LOG_COLLECTION", "Investigation Started", f"AI Agent initialized for {container_name}. Analyzing context...", "AI_AGENT", "INFO", broadcast)
 
-        correction = build_correction_turn(ai_result["_parse_error"])
-        messages.append({"role": "assistant", "content": full_text})
-        messages.append({"role": "user",      "content": correction})
+        if not _API_KEY:
+            result = {
+                "investigation_id": investigation_id,
+                "container":        container_name,
+                "root_cause":       "Mistral API key not configured.",
+                "confidence":       0.0,
+                "evidence_citations": [],
+                "proposed_actions": [],
+                "requires_human":   True,
+            }
+            await _finish(investigation_id, container_name, result, broadcast, lifecycle="ESCALATED")
+            return result
 
-        full_text_2 = await _stream_mistral(
-            messages         = messages,
-            model            = model,
-            investigation_id = investigation_id,
-            container_name   = container_name,
-            broadcast        = broadcast,
-            sequence_offset  = 10000,
+        # ── Model selection ────────────────────────────────────────────────────────
+        model = _MODEL_ESCALATED if score >= 60 else _MODEL_STANDARD
+
+        # ── Build prompt ───────────────────────────────────────────────────────────
+        system_prompt = build_system_prompt(packet)
+        user_message  = build_user_message(container_name)
+
+        messages = [
+            {"role": "system",  "content": system_prompt},
+            {"role": "user",    "content": user_message},
+        ]
+
+        # ── Stream Mistral response ────────────────────────────────────────────────
+        full_text = await _stream_mistral(
+            messages          = messages,
+            model             = model,
+            investigation_id  = investigation_id,
+            container_name    = container_name,
+            broadcast         = broadcast,
         )
-        ai_result = parse_output(full_text_2, investigation_id, container_name)
-        # If still failing → fallback already has requires_human=True
 
-    # ── Store result in packet for guardrail soft-warning access ──────────────
-    packet["ai_result"] = ai_result
+        # ── Parse output ───────────────────────────────────────────────────────────
+        ai_result = parse_output(full_text, investigation_id, container_name)
 
-    # ── Lifecycle: VALIDATING ─────────────────────────────────────────────────
-    _set_state(investigation_id, "VALIDATING")
-    await broadcast({
-        "type":             "AI_LIFECYCLE",
-        "investigation_id": investigation_id,
-        "container":        container_name,
-        "from_state":       "INVESTIGATING",
-        "to_state":         "VALIDATING",
-    })
+        # ── Retry if parse failed ──────────────────────────────────────────────────
+        if ai_result.get("_parse_error"):
+            await broadcast({
+                "type":             "AI_THOUGHT",
+                "investigation_id": investigation_id,
+                "container":        container_name,
+                "chunk":            "[Retrying — output schema validation failed]",
+                "sequence":         9999,
+            })
 
-    # ── Broadcast complete result (before execution) ───────────────────────────
-    await broadcast({
-        "type":             "AI_INVESTIGATION_COMPLETE",
-        "investigation_id": investigation_id,
-        "container":        container_name,
-        "result":           ai_result,
-        "lifecycle_state":  "VALIDATING",
-    })
+            correction = build_correction_turn(ai_result["_parse_error"])
+            messages.append({"role": "assistant", "content": full_text})
+            messages.append({"role": "user",      "content": correction})
 
-    # ── Deep investigation loop trigger ───────────────────────────────────────
-    recovery = packet.get("recovery_attempt", {})
-    needs_deep_loop = (
-        not recovery.get("success") 
-        or ai_result.get("requires_human") 
-        or ai_result.get("confidence", 1.0) < 0.6
-        or score >= 60
-    )
+            full_text_2 = await _stream_mistral(
+                messages         = messages,
+                model            = model,
+                investigation_id = investigation_id,
+                container_name   = container_name,
+                broadcast        = broadcast,
+                sequence_offset  = 10000,
+            )
+            ai_result = parse_output(full_text_2, investigation_id, container_name)
+            # If still failing → fallback already has requires_human=True
 
-    if needs_deep_loop:
-        ai_result = await deep_investigation_loop(packet, ai_result, broadcast)
+        # ── Store result in packet for guardrail soft-warning access ──────────────
         packet["ai_result"] = ai_result
 
-    # ── Requires human → skip execution ───────────────────────────────────────
-    if ai_result.get("requires_human") or not ai_result.get("proposed_actions"):
-        await _finish(investigation_id, container_name, ai_result, broadcast, lifecycle="ESCALATED")
-        return ai_result
-
-    # ── Execute proposed actions through sandbox + guardrails ──────────────────
-    _set_state(investigation_id, "EXECUTING")
-    await broadcast({
-        "type":             "AI_LIFECYCLE",
-        "investigation_id": investigation_id,
-        "container":        container_name,
-        "from_state":       "VALIDATING",
-        "to_state":         "EXECUTING",
-    })
-
-    execution_results = []
-    any_executed      = False
-
-    for action in ai_result.get("proposed_actions", []):
-        tool_name  = action.get("tool")
-        parameters = action.get("parameters", {})
-
-        # Sandbox check
-        sandbox_result = sandbox_validate(tool_name, parameters, packet)
-        if not sandbox_result.approved:
-            execution_results.append({
-                "tool":    tool_name,
-                "outcome": "sandbox_blocked",
-                "reason":  sandbox_result.blocking_reason,
-            })
-            await broadcast({
-                "type":             "TOOL_BLOCKED",
-                "investigation_id": investigation_id,
-                "container":        container_name,
-                "tool":             tool_name,
-                "layer":            "sandbox",
-                "reason":           sandbox_result.blocking_reason,
-            })
-            continue
-
-        # Guardrail check
-        gd = guardrails_check(tool_name, parameters, packet, investigation_id)
-        if not gd.allowed:
-            execution_results.append({
-                "tool":    tool_name,
-                "outcome": gd.action,
-                "reason":  gd.reason,
-            })
-            await broadcast({
-                "type":             "TOOL_BLOCKED",
-                "investigation_id": investigation_id,
-                "container":        container_name,
-                "tool":             tool_name,
-                "layer":            "guardrail",
-                "decision":         gd.to_dict(),
-            })
-            continue
-
-        # Execute
+        # ── Lifecycle: RCA_IDENTIFIED ─────────────────────────────────────────────────
+        _set_state(investigation_id, "RCA_IDENTIFIED")
         await broadcast({
-            "type":             "TOOL_EXECUTING",
+            "type":             "AI_LIFECYCLE",
             "investigation_id": investigation_id,
             "container":        container_name,
-            "tool":             tool_name,
-            "parameters":       parameters,
-            "warnings":         gd.soft_warnings,
+            "from_state":       "INVESTIGATING",
+            "to_state":         "RCA_IDENTIFIED",
+        })
+        await append_timeline_event(investigation_id, "RCA_GENERATED", "RCA Identified", "Root cause analysis report generated by AI.", "AI_AGENT", "INFO", broadcast)
+
+        # ── Broadcast complete result (before execution) ───────────────────────────
+        await broadcast({
+            "type":             "AI_INVESTIGATION_COMPLETE",
+            "investigation_id": investigation_id,
+            "container":        container_name,
+            "result":           ai_result,
+            "lifecycle_state":  "RCA_IDENTIFIED",
         })
 
-        tool_result = execute_tool(
-            tool_name        = tool_name,
-            parameters       = parameters,
-            investigation_id = investigation_id,
-            actor            = "ai_auto",
+        # ── Deep investigation loop trigger ───────────────────────────────────────
+        recovery = packet.get("recovery_attempt", {})
+        needs_deep_loop = (
+            not recovery.get("success") 
+            or ai_result.get("requires_human") 
+            or ai_result.get("confidence", 1.0) < 0.6
+            or score >= 60
         )
 
-        execution_results.append({
-            "tool":    tool_name,
-            "outcome": "executed",
-            "result":  tool_result,
-        })
+        if needs_deep_loop:
+            ai_result = await deep_investigation_loop(packet, ai_result, broadcast)
+            packet["ai_result"] = ai_result
 
+        # ── Requires human → skip execution if no actions ──────────────────────────
+        if (ai_result.get("requires_human") and not ai_result.get("proposed_actions")) or not ai_result.get("proposed_actions"):
+            await _finish(investigation_id, container_name, ai_result, broadcast, lifecycle="RESOLVED")
+            return ai_result
+
+        # ── Execute proposed actions through sandbox + guardrails ──────────────────
+        _set_state(investigation_id, "RECOVERING")
         await broadcast({
-            "type":             "TOOL_RESULT",
+            "type":             "AI_LIFECYCLE",
             "investigation_id": investigation_id,
             "container":        container_name,
-            "tool":             tool_name,
-            "result":           tool_result,
+            "from_state":       "RCA_IDENTIFIED",
+            "to_state":         "RECOVERING",
         })
 
-        # Update remediation tracking
-        _target = parameters.get("container_name", container_name)
-        remediation_timestamps[_target]    = datetime.now(timezone.utc)
-        remediation_retry_counts[_target]  = remediation_retry_counts.get(_target, 0) + 1
+        execution_results = []
+        any_executed      = False
 
-        if tool_result.get("success"):
-            any_executed = True
+        for action in ai_result.get("proposed_actions", []):
+            tool_name  = action.get("tool")
+            parameters = action.get("parameters", {})
 
-    # ── Lifecycle: RESOLVED or ESCALATED ──────────────────────────────────────
-    final_state = "RESOLVED" if any_executed else "ESCALATED"
-    ai_result["execution_results"] = execution_results
-    await _finish(investigation_id, container_name, ai_result, broadcast, lifecycle=final_state)
+            # Sandbox check
+            sandbox_result = sandbox_validate(tool_name, parameters, packet)
+            if not sandbox_result.approved:
+                execution_results.append({
+                    "tool":    tool_name,
+                    "outcome": "sandbox_blocked",
+                    "reason":  sandbox_result.blocking_reason,
+                })
+                await broadcast({
+                    "type":             "TOOL_BLOCKED",
+                    "investigation_id": investigation_id,
+                    "container":        container_name,
+                    "tool":             tool_name,
+                    "layer":            "sandbox",
+                    "reason":           sandbox_result.blocking_reason,
+                })
+                await append_timeline_event(investigation_id, "SANDBOX_BLOCKED", "Execution Blocked", f"{tool_name} was blocked by sandbox policies.", "SANDBOX", "WARN", broadcast)
+                continue
 
-    return ai_result
+            # Guardrail check
+            gd = guardrails_check(tool_name, parameters, packet, investigation_id)
+            requires_approval = ai_result.get("requires_human") or gd.action == "escalate"
+
+            if not gd.allowed and not requires_approval:
+                execution_results.append({
+                    "tool":    tool_name,
+                    "outcome": gd.action,
+                    "reason":  gd.reason,
+                })
+                await broadcast({
+                    "type":             "TOOL_BLOCKED",
+                    "investigation_id": investigation_id,
+                    "container":        container_name,
+                    "tool":             tool_name,
+                    "layer":            "guardrail",
+                    "decision":         gd.to_dict(),
+                })
+                continue
+
+            if requires_approval:
+                _set_state(investigation_id, "AWAITING_APPROVAL")
+                await broadcast({
+                    "type":             "AI_LIFECYCLE",
+                    "investigation_id": investigation_id,
+                    "container":        container_name,
+                    "from_state":       "RECOVERING",
+                    "to_state":         "AWAITING_APPROVAL",
+                })
+                await append_timeline_event(investigation_id, "APPROVAL_REQUIRED", "Approval Required", f"Action {tool_name} requires operator sign-off.", "SYSTEM", "WARN", broadcast)
+                
+                from app.runtime.state import approval_events, approval_results
+                approval_events[investigation_id] = asyncio.Event()
+                try:
+                    await asyncio.wait_for(approval_events[investigation_id].wait(), timeout=600)
+                    res = approval_results.get(investigation_id, {})
+                    if res.get("status") == "approved":
+                        await append_timeline_event(investigation_id, "ACTION_APPROVED", "Action Approved", f"Approved by {res.get('user', 'Operator')}.", "OPERATOR", "INFO", broadcast)
+                        _set_state(investigation_id, "RECOVERING")
+                        await broadcast({"type": "AI_LIFECYCLE", "investigation_id": investigation_id, "container": container_name, "from_state": "AWAITING_APPROVAL", "to_state": "RECOVERING"})
+                    else:
+                        await append_timeline_event(investigation_id, "ACTION_REJECTED", "Action Rejected", f"Rejected by {res.get('user', 'Operator')}.", "OPERATOR", "WARN", broadcast)
+                        execution_results.append({"tool": tool_name, "outcome": "rejected_by_operator"})
+                        _set_state(investigation_id, "REJECTED")
+                        await broadcast({"type": "AI_LIFECYCLE", "investigation_id": investigation_id, "container": container_name, "from_state": "AWAITING_APPROVAL", "to_state": "REJECTED"})
+                        continue
+                except asyncio.TimeoutError:
+                    await append_timeline_event(investigation_id, "APPROVAL_TIMEOUT", "Approval Timeout", "No response in 10 minutes. Action auto-rejected.", "SYSTEM", "WARN", broadcast)
+                    execution_results.append({"tool": tool_name, "outcome": "timeout_rejected"})
+                    _set_state(investigation_id, "REJECTED")
+                    await broadcast({"type": "AI_LIFECYCLE", "investigation_id": investigation_id, "container": container_name, "from_state": "AWAITING_APPROVAL", "to_state": "REJECTED"})
+                    continue
+
+            await append_timeline_event(investigation_id, "TOOL_EXECUTION", "Executing Action", f"Running {tool_name} with provided parameters.", "AI_AGENT", "INFO", broadcast)
+
+            await broadcast({
+                "type":             "TOOL_EXECUTING",
+                "investigation_id": investigation_id,
+                "container":        container_name,
+                "tool":             tool_name,
+                "parameters":       parameters,
+                "warnings":         gd.soft_warnings,
+            })
+
+            tool_result = execute_tool(
+                tool_name        = tool_name,
+                parameters       = parameters,
+                investigation_id = investigation_id,
+                actor            = "ai_auto",
+            )
+
+            execution_results.append({
+                "tool":    tool_name,
+                "outcome": "executed",
+                "result":  tool_result,
+            })
+
+            await broadcast({
+                "type":             "TOOL_RESULT",
+                "investigation_id": investigation_id,
+                "container":        container_name,
+                "tool":             tool_name,
+                "result":           tool_result,
+            })
+
+            # Update remediation tracking
+            _target = parameters.get("container_name", container_name)
+            remediation_timestamps[_target]    = datetime.now(timezone.utc)
+            remediation_retry_counts[_target]  = remediation_retry_counts.get(_target, 0) + 1
+
+            if tool_result.get("success"):
+                any_executed = True
+
+        # ── Lifecycle: RESOLVED or ESCALATED ──────────────────────────────────────
+        if any_executed:
+            _set_state(investigation_id, "MONITORING")
+            await broadcast({
+                "type":             "AI_LIFECYCLE",
+                "investigation_id": investigation_id,
+                "container":        container_name,
+                "from_state":       "RECOVERING",
+                "to_state":         "MONITORING",
+            })
+            await append_timeline_event(investigation_id, "MONITORING_HEALTH", "Monitoring Health", f"Verifying container recovery for {container_name}...", "AI_AGENT", "INFO", broadcast)
+            await asyncio.sleep(2)  # Simulate brief monitoring phase
+
+        final_state = "RESOLVED" if any_executed else "ESCALATED"
+        if final_state == "RESOLVED":
+            await append_timeline_event(investigation_id, "INCIDENT_RESOLVED", "Incident Resolved", f"Container {container_name} is operating normally.", "SYSTEM", "INFO", broadcast)
+        else:
+            await append_timeline_event(investigation_id, "INCIDENT_ESCALATED", "Incident Escalated", "Unable to fully remediate. Escalating to human operators.", "SYSTEM", "WARN", broadcast)
+
+        ai_result["execution_results"] = execution_results
+        await _finish(investigation_id, container_name, ai_result, broadcast, lifecycle=final_state)
+
+        return ai_result
+    except asyncio.CancelledError:
+        await _finish(
+            investigation_id,
+            container_name,
+            {
+                "investigation_id": investigation_id,
+                "container":        container_name,
+                "root_cause":       "Investigation stopped by user.",
+                "confidence":       0.0,
+                "evidence_citations": [],
+                "proposed_actions": [],
+                "requires_human":   False,
+            },
+            broadcast,
+            lifecycle="RESOLVED"
+        )
+        raise
+    finally:
+        from app.runtime.state import active_tasks
+        active_tasks.pop(investigation_id, None)
 
 
 async def _stream_mistral(
