@@ -55,6 +55,15 @@ class RecoveryAction(Base, UUIDMixin):
     rollback_available: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    rollback_executed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    rollback_status: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+    correlation_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, index=True
+    )
 
     # ── Lifecycle timestamps ───────────────────────────────────────────────
     started_at: Mapped[Any] = mapped_column(
@@ -96,6 +105,11 @@ class RecoveryAction(Base, UUIDMixin):
             "execution_status",
         ),
         Index("ix_recovery_created_at", "created_at"),
+        Index(
+            "ix_recovery_inv_created",
+            "investigation_id",
+            "created_at",
+        ),
     )
 
     def __repr__(self) -> str:

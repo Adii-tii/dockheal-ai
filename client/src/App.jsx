@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { BrowserRouter, Routes, Route, Navigate, Link, useLocation } from "react-router-dom"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Toaster } from "@/components/ui/sonner"
 import { toast } from "sonner"
 import {
   LayoutDashboard, BrainCircuit, Activity, FileWarning, ShieldCheck, ActivitySquare,
-  ChevronLeft, ChevronRight
+  ChevronLeft, ChevronRight, FlaskConical
 } from "lucide-react"
 
 import { useStore } from "./store"
@@ -14,6 +14,7 @@ import Investigations from "./pages/Investigations"
 import Sandbox from "./pages/Sandbox"
 import Policies from "./pages/Policies"
 import Timeline from "./pages/Timeline"
+import Simulate from "./pages/Simulate"
 import { Search, HelpCircle } from "lucide-react"
 
 // Custom Sidebar Component for Routing
@@ -26,6 +27,7 @@ function AppSidebar({ collapsed, onToggle }) {
     { name: "Sandbox", path: "/sandbox", icon: FileWarning },
     { name: "Policies", path: "/policies", icon: ShieldCheck },
     { name: "Timeline", path: "/timeline", icon: ActivitySquare },
+    { name: "Simulate Tests", path: "/simulate", icon: FlaskConical },
   ]
 
   return (
@@ -79,6 +81,7 @@ function TopNavbar() {
       case "/sandbox": return "Sandbox"
       case "/policies": return "Policies"
       case "/timeline": return "Timeline"
+      case "/simulate": return "Simulate Tests"
       default: return "DockHeal"
     }
   }
@@ -119,18 +122,58 @@ function MainLayout() {
     })
   }
 
-  useEffect(() => {
-    fetchData()
+  // Stable refs — prevents useEffect from re-running on store identity changes
+  const fetchDataRef = useRef(fetchData)
+  const handleWsMsgRef = useRef(handleWsMessage)
+  useEffect(() => { fetchDataRef.current = fetchData }, [fetchData])
+  useEffect(() => { handleWsMsgRef.current = handleWsMessage }, [handleWsMessage])
 
-    const ws = new WebSocket("ws://localhost:8000/ws")
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data)
-      console.log("WebSocket event:", data)
-      handleWsMessage(data)
+  useEffect(() => {
+    fetchDataRef.current()
+
+    let ws = null
+    let reconnectTimer = null
+    let reconnectDelay = 1000
+    let destroyed = false
+
+    function connect() {
+      if (destroyed) return
+      ws = new WebSocket('ws://localhost:8000/ws')
+
+      ws.onopen = () => {
+        reconnectDelay = 1000 // reset backoff on successful connect
+        fetchDataRef.current()
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          handleWsMsgRef.current(data)
+        } catch (e) {
+          console.warn('WS parse error', e)
+        }
+      }
+
+      ws.onerror = () => { /* handled by onclose */ }
+
+      ws.onclose = () => {
+        if (destroyed) return
+        // Auto-reconnect with exponential backoff, capped at 30 seconds
+        reconnectTimer = setTimeout(() => {
+          reconnectDelay = Math.min(reconnectDelay * 2, 30000)
+          connect()
+        }, reconnectDelay)
+      }
     }
 
-    return () => ws.close()
-  }, [fetchData, handleWsMessage])
+    connect()
+
+    return () => {
+      destroyed = true
+      clearTimeout(reconnectTimer)
+      if (ws) ws.close()
+    }
+  }, []) // empty deps — stable via refs above
 
   return (
     <div className="flex h-screen w-full bg-[#000000] text-[#e8eaed] overflow-hidden">
@@ -143,6 +186,7 @@ function MainLayout() {
           <Route path="/sandbox" element={<Sandbox />} />
           <Route path="/policies" element={<Policies />} />
           <Route path="/timeline" element={<Timeline />} />
+          <Route path="/simulate" element={<Simulate />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>

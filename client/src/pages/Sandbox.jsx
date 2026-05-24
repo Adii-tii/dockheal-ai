@@ -5,18 +5,18 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
-import { 
-  FileWarning, CheckCircle2, XCircle, ShieldAlert, Wrench, 
+import {
+  FileWarning, CheckCircle2, XCircle, ShieldAlert, Wrench,
   Settings, History, Shield, PlayCircle, ToggleLeft, ToggleRight,
   User, Check, AlertTriangle, RefreshCw, Server, Layers
 } from "lucide-react"
 
 export default function Sandbox() {
-  const { 
-    investigations, 
-    sandboxTools, 
-    fetchSandboxTools, 
-    blockSandboxTool, 
+  const {
+    investigations,
+    sandboxTools,
+    fetchSandboxTools,
+    blockSandboxTool,
     unblockSandboxTool,
     auditLog,
     fetchAudit
@@ -40,10 +40,10 @@ export default function Sandbox() {
     .map(inv => {
       const actions = inv.result.proposed_actions.map(action => {
         const execResult = inv.result.execution_results?.find(r => r.tool === action.tool)
-        
+
         let status = "passed"
         let reason = "Preconditions validated. Safe to run."
-        
+
         if (execResult) {
           if (execResult.outcome === "sandbox_blocked" || execResult.outcome === "block") {
             status = "blocked"
@@ -100,8 +100,8 @@ export default function Sandbox() {
   const flattenedActions = sandboxEnvironments.flatMap(env => env.actions)
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden bg-[#121212] p-6 space-y-6">
-      
+    <div className="flex-1 flex flex-col h-full overflow-hidden bg-[#121212] py-3 px-6 space-y-4">
+
       {/* Header */}
       <div className="flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
@@ -110,8 +110,8 @@ export default function Sandbox() {
             Sandbox & <span className="text-[#8ab4f8]">Guardrails</span>
           </h1>
         </div>
-        <Button 
-          variant="outline" 
+        <Button
+          variant="outline"
           onClick={reloadData}
           className="h-8 px-3 py-1 text-[13px] font-medium text-[#8ab4f8] border border-[#5f6368] rounded bg-transparent hover:bg-[#8ab4f8]/10 flex items-center gap-2"
         >
@@ -121,76 +121,93 @@ export default function Sandbox() {
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 shrink-0">
-        <Card className="bg-[#000000] border border-[#3c4043] rounded-lg">
-          <CardContent className="p-4 flex items-center gap-3">
-             <div className="p-2 bg-[#81c995]/10 rounded">
-              <CheckCircle2 className="h-5 w-5 text-[#81c995]" />
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 shrink-0 mb-4 mb-10 ">
+
+        {/* Passed Validations */}
+        <Card className="bg-[#000000] border border-[#3c4043] rounded-md py-2 px-2">
+          <CardContent className="p-1.5 flex items-center gap-2">
+            <div className="p-1 bg-[#81c995]/10 rounded-sm shrink-0 flex items-center justify-center">
+              <CheckCircle2 className="h-4 w-4 text-[#81c995]" />
             </div>
-            <div>
-              <p className="text-[11px] text-[#9aa0a6] font-medium">Passed Validations</p>
-              <h2 className="text-[18px] font-semibold text-[#e8eaed] mt-0.5">
+            <div className="flex items-center gap-1.5 text-[15px] leading-none">
+              <span className="font-semibold text-[#e8eaed]">
                 {flattenedActions.filter(i => i.status === 'executed' || i.status === 'passed').length}
-              </h2>
+              </span>
+              <span className="text-[#9aa0a6] font-medium">
+                Passed Validations
+              </span>
             </div>
           </CardContent>
         </Card>
-        <Card className="bg-[#000000] border border-[#3c4043] rounded-lg">
-          <CardContent className="p-4 flex items-center gap-3">
-             <div className="p-2 bg-[#f28b82]/10 rounded">
-              <XCircle className="h-5 w-5 text-[#f28b82]" />
+
+        {/* Blocked Validations */}
+        <Card className="bg-[#000000] border border-[#3c4043] rounded-md py-2 px-2">
+          <CardContent className="p-1.5 flex items-center gap-2">
+            <div className="p-1 bg-[#f28b82]/10 rounded-sm shrink-0 flex items-center justify-center">
+              <XCircle className="h-4 w-4 text-[#f28b82]" />
             </div>
-            <div>
-              <p className="text-[11px] text-[#9aa0a6] font-medium">Blocked Validations</p>
-              <h2 className="text-[18px] font-semibold text-[#e8eaed] mt-0.5">
+            <div className="flex items-center gap-1.5 text-[15px] leading-none">
+              <span className="font-semibold text-[#e8eaed]">
                 {flattenedActions.filter(i => i.status === 'blocked').length}
-              </h2>
+              </span>
+              <span className="text-[#9aa0a6] font-medium">
+                Blocked Validations
+              </span>
             </div>
           </CardContent>
         </Card>
-        <Card className="bg-[#000000] border border-[#3c4043] rounded-lg">
-          <CardContent className="p-4 flex items-center gap-3">
-             <div className="p-2 bg-[#fbbc04]/10 rounded">
-              <ShieldAlert className="h-5 w-5 text-[#fbbc04]" />
+
+        {/* Active Environments */}
+        <Card className="bg-[#000000] border border-[#3c4043] rounded-md py-0">
+          <CardContent className="p-1.5 flex items-center gap-2">
+            <div className="p-1 bg-[#fbbc04]/10 rounded-sm shrink-0 flex items-center justify-center">
+              <ShieldAlert className="h-3.5 w-3.5 text-[#fbbc04]" />
             </div>
-            <div>
-              <p className="text-[11px] text-[#9aa0a6] font-medium">Active Environments</p>
-              <h2 className="text-[18px] font-semibold text-[#e8eaed] mt-0.5">
+            <div className="flex items-center gap-1.5 text-[11px] leading-none">
+              <span className="font-semibold text-[#e8eaed]">
                 {sandboxEnvironments.filter(env => env.status === 'active' || env.status === 'suspended').length}
-              </h2>
+              </span>
+              <span className="text-[#9aa0a6] font-medium">
+                Active Environments
+              </span>
             </div>
           </CardContent>
         </Card>
-        <Card className="bg-[#000000] border border-[#3c4043] rounded-lg">
-          <CardContent className="p-4 flex items-center gap-3">
-             <div className="p-2 bg-[#8ab4f8]/10 rounded">
-              <Settings className="h-5 w-5 text-[#8ab4f8]" />
+
+        {/* Blocked Tools */}
+        <Card className="bg-[#000000] border border-[#3c4043] rounded-md py-0">
+          <CardContent className="p-1.5 flex items-center gap-2">
+            <div className="p-1 bg-[#8ab4f8]/10 rounded-sm shrink-0 flex items-center justify-center">
+              <Settings className="h-3.5 w-3.5 text-[#8ab4f8]" />
             </div>
-            <div>
-              <p className="text-[11px] text-[#9aa0a6] font-medium">Blocked Tools</p>
-              <h2 className="text-[18px] font-semibold text-[#e8eaed] mt-0.5">
+            <div className="flex items-center gap-1.5 text-[11px] leading-none">
+              <span className="font-semibold text-[#e8eaed]">
                 {sandboxTools.filter(t => t.blocked).length}
-              </h2>
+              </span>
+              <span className="text-[#9aa0a6] font-medium">
+                Blocked Tools
+              </span>
             </div>
           </CardContent>
         </Card>
+
       </div>
 
       {/* Tabs Navigation */}
       <div className="flex items-center gap-6 border-b border-[#3c4043] shrink-0">
-        <div 
+        <div
           className={`text-[13px] font-medium pb-2 cursor-pointer transition-colors ${activeTab === 'validations' ? 'text-[#8ab4f8] border-b-2 border-[#8ab4f8]' : 'text-muted-foreground hover:text-foreground'}`}
           onClick={() => setActiveTab('validations')}
         >
           Sandbox Environments
         </div>
-        <div 
+        <div
           className={`text-[13px] font-medium pb-2 cursor-pointer transition-colors ${activeTab === 'tools' ? 'text-[#8ab4f8] border-b-2 border-[#8ab4f8]' : 'text-muted-foreground hover:text-foreground'}`}
           onClick={() => setActiveTab('tools')}
         >
           Tools & Configuration
         </div>
-        <div 
+        <div
           className={`text-[13px] font-medium pb-2 cursor-pointer transition-colors ${activeTab === 'audit' ? 'text-[#8ab4f8] border-b-2 border-[#8ab4f8]' : 'text-muted-foreground hover:text-foreground'}`}
           onClick={() => setActiveTab('audit')}
         >
@@ -212,7 +229,7 @@ export default function Sandbox() {
                 ) : (
                   sandboxEnvironments.map((env) => (
                     <Card key={env.id} className="bg-[#000000] border border-[#3c4043] rounded-lg overflow-hidden shadow-md hover:border-[#8ab4f8]/30 transition-colors">
-                      
+
                       {/* Sandbox Header */}
                       <div className="bg-[#121212] px-6 py-4 border-b border-[#3c4043] flex flex-col md:flex-row md:items-center justify-between gap-4">
                         <div className="flex items-center gap-3">
@@ -227,28 +244,26 @@ export default function Sandbox() {
                           </div>
                         </div>
                         <div className="flex items-center gap-3">
-                          <Badge className={`text-[10px] font-bold border-none px-2 py-0.5 rounded ${
-                            env.severity === 'P0' ? 'bg-[#ea4335]/20 text-[#ea4335]' :
+                          <Badge className={`text-[10px] font-bold border-none px-2 py-0.5 rounded ${env.severity === 'P0' ? 'bg-[#ea4335]/20 text-[#ea4335]' :
                             env.severity === 'P1' ? 'bg-[#ff9900]/20 text-[#ff9900]' :
-                            env.severity === 'P2' ? 'bg-[#fbbc05]/20 text-[#fbbc05]' :
-                            'bg-[#34a853]/20 text-[#34a853]'
-                          }`}>
+                              env.severity === 'P2' ? 'bg-[#fbbc05]/20 text-[#fbbc05]' :
+                                'bg-[#34a853]/20 text-[#34a853]'
+                            }`}>
                             Severity: {env.severity}
                           </Badge>
-                          <Badge className={`text-[10px] uppercase font-bold border-none px-2.5 py-0.5 rounded tracking-wide ${
-                            env.status === 'active' ? 'bg-[#81c995]/10 text-[#81c995] animate-pulse border border-[#81c995]/20' :
+                          <Badge className={`text-[10px] uppercase font-bold border-none px-2.5 py-0.5 rounded tracking-wide ${env.status === 'active' ? 'bg-[#81c995]/10 text-[#81c995] animate-pulse border border-[#81c995]/20' :
                             env.status === 'suspended' ? 'bg-[#fbbc04]/10 text-[#fbbc04] border border-[#fbbc04]/20' :
-                            'bg-[#9aa0a6]/10 text-[#9aa0a6] border border-[#3c4043]'
-                          }`}>
+                              'bg-[#9aa0a6]/10 text-[#9aa0a6] border border-[#3c4043]'
+                            }`}>
                             {env.status === 'active' ? '● Active Testing' :
-                             env.status === 'suspended' ? '● Suspended' : '✓ Teardown Clean'}
+                              env.status === 'suspended' ? '● Suspended' : '✓ Teardown Clean'}
                           </Badge>
                         </div>
                       </div>
 
                       {/* Sandbox Content Split */}
                       <div className="grid grid-cols-1 lg:grid-cols-3 divide-y lg:divide-y-0 lg:divide-x divide-[#3c4043]">
-                        
+
                         {/* Column 1: Triggered Incident & Environment Lifecycle */}
                         <div className="p-6 space-y-5 lg:col-span-1">
                           <div>
@@ -276,10 +291,9 @@ export default function Sandbox() {
                                       <div className="h-1 w-1 rounded-full bg-[#9aa0a6]" />
                                     </div>
                                   )}
-                                  <span className={`text-[12px] ${
-                                    step.status === 'completed' ? 'text-[#e8eaed] font-medium' :
+                                  <span className={`text-[12px] ${step.status === 'completed' ? 'text-[#e8eaed] font-medium' :
                                     step.status === 'failed' ? 'text-[#f28b82] font-medium' : 'text-[#9aa0a6]'
-                                  }`}>
+                                    }`}>
                                     {step.name}
                                   </span>
                                 </div>
@@ -298,23 +312,21 @@ export default function Sandbox() {
                                   <div className="flex items-center gap-2">
                                     <Wrench className="h-3.5 w-3.5 text-[#8ab4f8]" />
                                     <span className="font-mono text-[13px] text-[#e8eaed] font-semibold">{act.tool}</span>
-                                    <Badge className={`text-[9px] uppercase tracking-wider border-none px-1.5 py-0 h-4 ${
-                                      act.risk === 'safe' ? 'bg-[#81c995]/10 text-[#81c995]' :
+                                    <Badge className={`text-[9px] uppercase tracking-wider border-none px-1.5 py-0 h-4 ${act.risk === 'safe' ? 'bg-[#81c995]/10 text-[#81c995]' :
                                       act.risk === 'low' ? 'bg-[#8ab4f8]/10 text-[#8ab4f8]' :
-                                      act.risk === 'medium' ? 'bg-[#fbbc04]/10 text-[#fbbc04]' :
-                                      'bg-[#f28b82]/10 text-[#f28b82]'
-                                    }`}>{act.risk} risk</Badge>
+                                        act.risk === 'medium' ? 'bg-[#fbbc04]/10 text-[#fbbc04]' :
+                                          'bg-[#f28b82]/10 text-[#f28b82]'
+                                      }`}>{act.risk} risk</Badge>
                                   </div>
-                                  <Badge className={`text-[9px] font-bold border-none px-2 py-0.5 rounded self-start sm:self-auto ${
-                                    act.status === 'executed' || act.status === 'passed' ? 'bg-[#81c995]/10 text-[#81c995] border border-[#81c995]/20' :
+                                  <Badge className={`text-[9px] font-bold border-none px-2 py-0.5 rounded self-start sm:self-auto ${act.status === 'executed' || act.status === 'passed' ? 'bg-[#81c995]/10 text-[#81c995] border border-[#81c995]/20' :
                                     act.status === 'blocked' ? 'bg-[#f28b82]/10 text-[#f28b82] border border-[#f28b82]/20' :
-                                    act.status === 'pending' || act.status === 'escalated' ? 'bg-[#fbbc04]/10 text-[#fbbc04] border border-[#fbbc04]/20' :
-                                    'bg-[#e8eaed]/10 text-[#e8eaed]'
-                                  }`}>
+                                      act.status === 'pending' || act.status === 'escalated' ? 'bg-[#fbbc04]/10 text-[#fbbc04] border border-[#fbbc04]/20' :
+                                        'bg-[#e8eaed]/10 text-[#e8eaed]'
+                                    }`}>
                                     {act.status === 'executed' ? 'Approved & Executed' :
-                                     act.status === 'passed' ? 'Precheck Passed' :
-                                     act.status === 'blocked' ? 'Blocked by Policies' :
-                                     act.status === 'escalated' ? 'Escalated to Operator' : 'Validation Failed'}
+                                      act.status === 'passed' ? 'Precheck Passed' :
+                                        act.status === 'blocked' ? 'Blocked by Policies' :
+                                          act.status === 'escalated' ? 'Escalated to Operator' : 'Validation Failed'}
                                   </Badge>
                                 </div>
 
@@ -336,7 +348,7 @@ export default function Sandbox() {
                                     </div>
                                   </div>
                                 </div>
-                                
+
                                 {act.status === 'blocked' && (
                                   <div className="bg-[#f28b82]/5 border border-[#f28b82]/10 p-2.5 rounded-[6px] text-[12px] text-[#f28b82]">
                                     <strong>Blocking Reason:</strong> {act.reason}
@@ -355,71 +367,62 @@ export default function Sandbox() {
             </ScrollArea>
           </div>
         ) : activeTab === 'tools' ? (
-          <ScrollArea className="flex-1 min-h-0">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-4">
-              {sandboxTools.map((tool) => (
-                <div 
-                  key={tool.name} 
-                  className={`border rounded-lg bg-[#000000] p-4 flex flex-col justify-between transition-all hover:border-[#8ab4f8]/50 ${tool.blocked ? 'border-[#f28b82]/40 opacity-80' : 'border-[#3c4043]'}`}
-                >
-                  <div>
-                    <div className="flex items-start justify-between mb-3">
-                      <div className="flex flex-col">
-                        <span className="font-mono text-sm text-[#e8eaed] font-semibold">{tool.name}</span>
-                        <span className="text-[10px] text-[#9aa0a6] mt-0.5">Risk: 
-                          <span className={`ml-1 font-semibold uppercase ${
-                            tool.risk_level === 'safe' ? 'text-[#81c995]' :
-                            tool.risk_level === 'low' ? 'text-[#8ab4f8]' :
-                            tool.risk_level === 'medium' ? 'text-[#fbbc04]' : 'text-[#f28b82]'
-                          }`}> {tool.risk_level}</span>
+          <Card className="flex-1 flex flex-col bg-[#000000] rounded-[10px] border border-[#3c4043] overflow-hidden">
+            <ScrollArea className="flex-1 min-h-0 bg-[#000000]">
+              <Table>
+                <TableHeader className="bg-[#121212] sticky top-0 z-10 border-b border-[#3c4043]">
+                  <TableRow className="border-none hover:bg-transparent">
+                    <TableHead className="text-[#9aa0a6] text-xs font-medium w-[180px]">Tool Name</TableHead>
+                    <TableHead className="text-[#9aa0a6] text-xs font-medium w-[300px]">Description</TableHead>
+                    <TableHead className="text-[#9aa0a6] text-xs font-medium">Allowed Parameters</TableHead>
+                    <TableHead className="text-[#9aa0a6] text-xs font-medium w-[120px]">Status</TableHead>
+                    <TableHead className="text-[#9aa0a6] text-xs font-medium w-[120px] text-right pr-4">Action</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {sandboxTools.map((tool) => (
+                    <TableRow key={tool.name} className={`border-b border-[#3c4043]/40 hover:bg-[#121212] transition-colors ${tool.blocked ? 'opacity-75' : ''}`}>
+                      <TableCell className="py-3.5 whitespace-normal">
+                        <span className="font-mono text-xs text-[#e8eaed] font-semibold">{tool.name}</span>
+                      </TableCell>
+                      <TableCell className="py-3.5 whitespace-normal">
+                        <span className="text-[11px] text-[#9aa0a6] leading-relaxed">{tool.description}</span>
+                      </TableCell>
+
+
+                      <TableCell className="py-3.5 whitespace-normal">
+                        <div className="flex flex-wrap gap-1">
+                          {tool.allowed_params.map(p => (
+                            <code key={p} className="text-[10px] bg-[#121212] text-[#8ab4f8] px-1.5 py-0.5 rounded border border-[#3c4043]/50 font-mono">{p}</code>
+                          ))}
+                          {tool.allowed_params.length === 0 && <span className="text-muted-foreground italic text-[11px]">None</span>}
+                        </div>
+                      </TableCell>
+                      <TableCell className="py-3.5">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider border whitespace-nowrap ${tool.blocked
+                          ? 'bg-[#b71c1c]/15 text-[#f28b82] border-[#f28b82]/20'
+                          : 'bg-[#0f5132]/25 text-[#81c784] border-[#81c784]/20'
+                          }`}>
+                          {tool.blocked ? 'Blocked' : 'Active'}
                         </span>
-                      </div>
-                      <Badge className={`text-[10px] uppercase font-semibold border-none px-2 py-0.5 h-5 ${
-                        tool.blocked 
-                          ? 'bg-[#f28b82]/10 text-[#f28b82] border border-[#f28b82]/20' 
-                          : 'bg-[#81c995]/10 text-[#81c995] border border-[#81c995]/20'
-                      }`}>
-                        {tool.blocked ? 'Blocked' : 'Active'}
-                      </Badge>
-                    </div>
-
-                    <p className="text-[12px] text-[#9aa0a6] mb-4 min-h-[32px] line-clamp-2">{tool.description}</p>
-                    
-                    <div className="text-[11px] mb-4">
-                      <span className="text-[#e8eaed] font-medium">Parameters: </span>
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {tool.allowed_params.map(p => (
-                          <code key={p} className="text-[10px] bg-[#121212] text-[#8ab4f8] px-1.5 py-0.5 rounded border border-[#3c4043]/50 font-mono">{p}</code>
-                        ))}
-                        {tool.allowed_params.length === 0 && <span className="text-muted-foreground italic text-[10px]">None</span>}
-                      </div>
-                    </div>
-
-                    <div className="text-[11px] text-[#9aa0a6] mb-4 flex items-center gap-1.5">
-                      <span className="text-[#e8eaed]">Phase:</span> 
-                      <span className="font-mono text-[10px] bg-[#121212] border border-[#3c4043]/60 px-1.5 py-0.5 rounded text-white">{tool.phase === 1 ? 'Phase 1 (Autonomous)' : 'Phase 2 (Escalation Gate)'}</span>
-                    </div>
-                  </div>
-
-                  <div className="border-t border-[#3c4043] pt-3 mt-2 flex items-center justify-between">
-                    <span className="text-[11px] text-muted-foreground">
-                      {tool.blocked ? 'Autonomous run denied' : 'Autonomous run allowed'}
-                    </span>
-                    <Button 
-                      onClick={() => tool.blocked ? unblockSandboxTool(tool.name) : blockSandboxTool(tool.name)}
-                      className={`h-7 px-3 text-[11px] font-medium rounded transition-colors ${
-                        tool.blocked 
-                          ? 'bg-[#81c995] text-[#000000] hover:bg-[#81c995]/90' 
-                          : 'bg-[#f28b82]/10 text-[#f28b82] hover:bg-[#f28b82]/20 border border-[#f28b82]/30'
-                      }`}
-                    >
-                      {tool.blocked ? 'Unblock Tool' : 'Block Tool'}
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </ScrollArea>
+                      </TableCell>
+                      <TableCell className="py-3.5 text-right pr-4">
+                        <Button
+                          onClick={() => tool.blocked ? unblockSandboxTool(tool.name) : blockSandboxTool(tool.name)}
+                          className={`h-7 px-3 text-[11px] font-medium rounded transition-colors ${tool.blocked
+                            ? 'bg-[#81c995] text-[#000000] hover:bg-[#81c995]/90'
+                            : 'bg-[#f28b82]/10 text-[#f28b82] hover:bg-[#f28b82]/20 border border-[#f28b82]/30'
+                            }`}
+                        >
+                          {tool.blocked ? 'Unblock' : 'Block'}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </ScrollArea>
+          </Card>
         ) : (
           <Card className="flex-1 flex flex-col bg-[#000000] rounded-[10px] border border-[#3c4043] overflow-hidden">
             <ScrollArea className="flex-1 min-h-0 bg-[#000000]">
@@ -466,12 +469,11 @@ export default function Sandbox() {
                             </div>
                           </TableCell>
                           <TableCell>
-                            <Badge className={`text-[9px] uppercase tracking-wider border-none px-1.5 py-0 h-4 ${
-                              log.risk_level === 'safe' ? 'bg-[#81c995]/10 text-[#81c995]' :
+                            <Badge className={`text-[9px] uppercase tracking-wider border-none px-1.5 py-0 h-4 ${log.risk_level === 'safe' ? 'bg-[#81c995]/10 text-[#81c995]' :
                               log.risk_level === 'low' ? 'bg-[#8ab4f8]/10 text-[#8ab4f8]' :
-                              log.risk_level === 'medium' ? 'bg-[#fbbc04]/10 text-[#fbbc04]' :
-                              'bg-[#f28b82]/10 text-[#f28b82]'
-                            }`}>{log.risk_level}</Badge>
+                                log.risk_level === 'medium' ? 'bg-[#fbbc04]/10 text-[#fbbc04]' :
+                                  'bg-[#f28b82]/10 text-[#f28b82]'
+                              }`}>{log.risk_level}</Badge>
                           </TableCell>
                           <TableCell className="text-xs text-[#9aa0a6] font-mono">
                             {log.duration_ms !== null ? `${log.duration_ms}ms` : '—'}

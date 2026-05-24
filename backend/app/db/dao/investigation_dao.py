@@ -19,17 +19,21 @@ from app.db.models.enums import LifecycleState, SeverityLevel
 
 # States that represent an active (non-terminal) investigation
 ACTIVE_STATES: tuple[LifecycleState, ...] = (
-    LifecycleState.INITIATED,
-    LifecycleState.ANALYZING,
+    LifecycleState.DETECTED,
+    LifecycleState.INVESTIGATING,
+    LifecycleState.RCA_IDENTIFIED,
     LifecycleState.AWAITING_APPROVAL,
-    LifecycleState.REMEDIATING,
+    LifecycleState.RECOVERING,
+    LifecycleState.VALIDATING,
+    LifecycleState.MONITORING,
+    LifecycleState.PAUSED,
 )
 
 TERMINAL_STATES: tuple[LifecycleState, ...] = (
     LifecycleState.RESOLVED,
     LifecycleState.REJECTED,
+    LifecycleState.TIMED_OUT,
     LifecycleState.ESCALATED,
-    LifecycleState.BLOCKED,
 )
 
 

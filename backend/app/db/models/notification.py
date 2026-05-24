@@ -62,6 +62,9 @@ class Notification(Base, UUIDMixin):
         default=NotificationStatus.PENDING,
         index=True,
     )
+    correlation_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, index=True
+    )
 
     # ── Timestamp ──────────────────────────────────────────────────────────
     sent_at: Mapped[Any] = mapped_column(
@@ -101,6 +104,11 @@ class Notification(Base, UUIDMixin):
             "idx_notifications_metadata_gin",
             "metadata",
             postgresql_using="gin",
+        ),
+        Index(
+            "ix_notifications_inv_created",
+            "investigation_id",
+            "created_at",
         ),
     )
 

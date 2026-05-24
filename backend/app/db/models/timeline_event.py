@@ -9,7 +9,7 @@ investigation timeline and post-mortem analysis.
 import uuid
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy import func
@@ -42,6 +42,8 @@ class InvestigationTimelineEvent(Base, UUIDMixin):
         String(100), nullable=False, index=True,
         comment="e.g. ANALYSIS_STARTED, TOOL_CALLED, APPROVAL_REQUESTED, ACTION_EXECUTED"
     )
+    sequence_number: Mapped[int] = mapped_column(nullable=False)
+    correlation_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -92,6 +94,11 @@ class InvestigationTimelineEvent(Base, UUIDMixin):
             "ix_timeline_inv_event_type",
             "investigation_id",
             "event_type",
+        ),
+        UniqueConstraint(
+            "investigation_id",
+            "sequence_number",
+            name="uq_timeline_inv_sequence",
         ),
     )
 

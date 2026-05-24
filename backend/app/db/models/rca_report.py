@@ -9,7 +9,7 @@ updated after sandbox validation).
 import uuid
 from typing import Any
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy import func
@@ -34,6 +34,9 @@ class RCAReport(Base, UUIDMixin):
     rca_version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1,
         comment="Monotonically increasing version per investigation"
+    )
+    is_final: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
     )
 
     # ── Report body ────────────────────────────────────────────────────────

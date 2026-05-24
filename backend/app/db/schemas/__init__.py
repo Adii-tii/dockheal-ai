@@ -40,6 +40,10 @@ from app.db.schemas.system_metric import (
     SystemMetricCreate,
     SystemMetricResponse,
 )
+from app.db.schemas.system_metrics_hourly import (
+    SystemMetricHourlyCreate,
+    SystemMetricHourlyResponse,
+)
 from app.db.schemas.investigation_artifact import (
     ArtifactCreate,
     ArtifactResponse,
@@ -60,6 +64,7 @@ __all__ = [
     "SandboxEnvironmentCreate", "SandboxEnvironmentResponse", "SandboxEnvironmentUpdate",
     "RecoveryActionCreate", "RecoveryActionResponse", "RecoveryActionUpdate",
     "SystemMetricCreate", "SystemMetricResponse",
+    "SystemMetricHourlyCreate", "SystemMetricHourlyResponse",
     "ArtifactCreate", "ArtifactResponse", "ArtifactUpdate",
     "NotificationCreate", "NotificationResponse", "NotificationUpdate",
 ]

@@ -16,6 +16,8 @@ from app.db.models.enums import SeverityLevel, SourceType
 class _TimelineEventBase(BaseModel):
     investigation_id: uuid.UUID
     event_type: str = Field(..., max_length=100)
+    sequence_number: int
+    correlation_id: str | None = Field(None, max_length=255)
     title: str = Field(..., max_length=512)
     description: str | None = None
     source_type: SourceType = SourceType.AI_AGENT

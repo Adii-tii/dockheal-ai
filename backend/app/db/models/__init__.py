@@ -27,8 +27,10 @@ from app.db.models.approval_action import ApprovalAction
 from app.db.models.sandbox_environment import SandboxEnvironment
 from app.db.models.recovery_action import RecoveryAction
 from app.db.models.system_metric import SystemMetric
+from app.db.models.system_metrics_hourly import SystemMetricHourly
 from app.db.models.investigation_artifact import InvestigationArtifact
 from app.db.models.notification import Notification
+from app.db.models.api_call_log import ApiCallLog
 
 __all__ = [
     # Base / mixins
@@ -55,6 +57,8 @@ __all__ = [
     "SandboxEnvironment",
     "RecoveryAction",
     "SystemMetric",
+    "SystemMetricHourly",
     "InvestigationArtifact",
     "Notification",
+    "ApiCallLog",
 ]

@@ -28,6 +28,7 @@ class _NotificationBase(BaseModel):
         ),
     )
     status: NotificationStatus = NotificationStatus.PENDING
+    correlation_id: str | None = Field(None, max_length=255)
     sent_at: datetime | None = None
     metadata_: dict[str, Any] | None = Field(None, alias="metadata")
 
@@ -40,6 +41,7 @@ class NotificationCreate(_NotificationBase):
 class NotificationUpdate(BaseModel):
     """Partial update — typically called by the delivery worker."""
     status: NotificationStatus | None = None
+    correlation_id: str | None = Field(None, max_length=255)
     sent_at: datetime | None = None
     metadata_: dict[str, Any] | None = Field(None, alias="metadata")
 

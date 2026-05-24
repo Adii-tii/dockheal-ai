@@ -24,6 +24,7 @@ from app.db.models.enums import ContainerStatus, HealthStatus
 
 class _ContainerBase(BaseModel):
     container_name: str = Field(..., max_length=255)
+    runtime_id: str = Field(..., max_length=255)
     image_name: str | None = Field(None, max_length=512)
     status: ContainerStatus = ContainerStatus.UNKNOWN
     health_status: HealthStatus = HealthStatus.NONE
@@ -47,6 +48,7 @@ class ContainerCreate(_ContainerBase):
 class ContainerUpdate(BaseModel):
     """All fields optional for partial updates."""
     container_name: str | None = Field(None, max_length=255)
+    runtime_id: str | None = Field(None, max_length=255)
     image_name: str | None = None
     status: ContainerStatus | None = None
     health_status: HealthStatus | None = None

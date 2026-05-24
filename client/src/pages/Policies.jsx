@@ -135,15 +135,11 @@ export default function Policies() {
             </div>
           </div>
           
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            
-            {/* Left Column */}
-            <div className="space-y-6">
+          <div className="space-y-6 w-full">
               
               {/* Core Guardrails Card */}
               <div className="border border-[#3c4043] rounded-[10px] bg-[#000000] flex flex-col overflow-hidden">
                 <div className="px-5 py-3.5 border-b border-[#3c4043] shrink-0 flex items-center gap-2 bg-[#000000]">
-                  <Activity className="h-4 w-4 text-[#8ab4f8]" />
                   <div>
                     <h2 className="text-[13px] font-medium text-[#e8eaed]">Core Guardrails</h2>
                     <p className="text-[11px] text-[#9aa0a6] mt-0.5">Rules applied globally to all autonomous interventions.</p>
@@ -257,7 +253,6 @@ export default function Policies() {
               {/* Recovery & AI Engine Card */}
               <div className="border border-[#3c4043] rounded-[10px] bg-[#000000] flex flex-col overflow-hidden">
                 <div className="px-5 py-3.5 border-b border-[#3c4043] shrink-0 flex items-center gap-2 bg-[#000000]">
-                  <Cpu className="h-4 w-4 text-[#8ab4f8]" />
                   <div>
                     <h2 className="text-[13px] font-medium text-[#e8eaed]">Recovery & AI Engine</h2>
                     <p className="text-[11px] text-[#9aa0a6] mt-0.5">Settings for automated verification and AI loops.</p>
@@ -330,15 +325,11 @@ export default function Policies() {
                 </div>
               </div>
 
-            </div>
 
-            {/* Right Column */}
-            <div className="space-y-6">
 
               {/* Deterministic Severity Floors Card */}
               <div className="border border-[#3c4043] rounded-[10px] bg-[#000000] flex flex-col overflow-hidden">
                 <div className="px-5 py-3.5 border-b border-[#3c4043] shrink-0 flex items-center gap-2 bg-[#000000]">
-                  <ShieldAlert className="h-4 w-4 text-[#ea4335]" />
                   <div>
                     <h2 className="text-[13px] font-medium text-[#e8eaed]">Deterministic Severity Floors</h2>
                     <p className="text-[11px] text-[#9aa0a6] mt-0.5">Minimum severity scores (0-100) enforced for critical incidents.</p>
@@ -409,7 +400,6 @@ export default function Policies() {
               {/* Operator Locks Card */}
               <div className="border border-[#3c4043] rounded-[10px] bg-[#000000] flex flex-col overflow-hidden">
                 <div className="px-5 py-3.5 border-b border-[#3c4043] shrink-0 flex items-center gap-2 bg-[#000000]">
-                  <Lock className="h-4 w-4 text-[#8ab4f8]" />
                   <div>
                     <h2 className="text-[13px] font-medium text-[#e8eaed]">Operator Locks</h2>
                     <p className="text-[11px] text-[#9aa0a6] mt-0.5">Containers locked by human operators. Autonomous actions are blocked.</p>
@@ -444,7 +434,6 @@ export default function Policies() {
               {/* Manual Interventions Card */}
               <div className="border border-[#3c4043] rounded-[10px] bg-[#000000] flex flex-col overflow-hidden">
                 <div className="px-5 py-3.5 border-b border-[#3c4043] shrink-0 flex items-center gap-2 bg-[#000000]">
-                  <ShieldAlert className="h-4 w-4 text-[#9aa0a6]" />
                   <div>
                     <h2 className="text-[13px] font-medium text-[#e8eaed]">Manual Interventions</h2>
                     <p className="text-[11px] text-[#9aa0a6] mt-0.5">Containers stopped manually by users outside of DockHeal.</p>
@@ -464,8 +453,6 @@ export default function Policies() {
                   )}
                 </div>
               </div>
-
-            </div>
 
           </div>
         </div>

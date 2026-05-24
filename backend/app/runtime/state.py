@@ -14,6 +14,9 @@ investigation_states: dict = {}
 # Active investigation asyncio Tasks (keyed by investigation_id → asyncio.Task)
 active_tasks: dict = {}
 
+# Keyed by investigation_id → "paused" | "stopped"
+cancellation_reasons: dict = {}
+
 # Approval state sync: keyed by investigation_id → asyncio.Event
 approval_events: dict = {}
 
@@ -60,3 +63,11 @@ from app.runtime.policy_registry import POLICIES
 COOLDOWN_SECONDS    = POLICIES.cooldown_seconds
 MAX_RETRIES         = POLICIES.max_retries
 PACKET_MAX_AGE_SECS = POLICIES.packet_max_age_secs
+
+# ── Worker status ─────────────────────────────────────────────────────────────
+worker_statuses: dict[str, str] = {
+    "api": "healthy",
+    "monitor": "healthy",
+    "ai_worker": "healthy",
+    "notifications": "healthy",
+}

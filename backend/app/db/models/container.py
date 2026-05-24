@@ -25,19 +25,22 @@ class Container(Base, TimestampMixin):
 
     # ── Core identity ──────────────────────────────────────────────────────
     container_name: Mapped[str] = mapped_column(
+        String(255), nullable=False, index=True
+    )
+    runtime_id: Mapped[str] = mapped_column(
         String(255), nullable=False, unique=True, index=True
     )
     image_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     # ── Runtime state ──────────────────────────────────────────────────────
     status: Mapped[ContainerStatus] = mapped_column(
-        SAEnum(ContainerStatus, name="container_status_enum", create_type=False),
+        SAEnum(ContainerStatus, name="container_status_enum", values_callable=lambda x: [e.value for e in x], create_type=False),
         nullable=False,
         default=ContainerStatus.UNKNOWN,
         index=True,
     )
     health_status: Mapped[HealthStatus] = mapped_column(
-        SAEnum(HealthStatus, name="health_status_enum", create_type=False),
+        SAEnum(HealthStatus, name="health_status_enum", values_callable=lambda x: [e.value for e in x], create_type=False),
         nullable=False,
         default=HealthStatus.NONE,
     )
@@ -45,6 +48,10 @@ class Container(Base, TimestampMixin):
     # ── Policy ────────────────────────────────────────────────────────────
     auto_restart: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
+    )
+    is_manually_stopped: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+        comment="True when a user explicitly stopped this container via docker stop/kill"
     )
     environment: Mapped[str | None] = mapped_column(
         String(100), nullable=True, comment="e.g. production, staging, dev"

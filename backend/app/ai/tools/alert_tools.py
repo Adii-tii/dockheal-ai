@@ -30,6 +30,8 @@ def send_alert_tool(
     container_name: str,
     message: str,
     severity: str = "P2",
+    investigation_id: str = "manual",
+    actor: str = "ai_auto",
 ) -> ToolResult:
     # Sanitise inputs
     severity = severity if severity in ("P0", "P1", "P2", "P3") else "P2"
@@ -43,9 +45,50 @@ def send_alert_tool(
         "severity":  severity,
     }
 
+    # Record notification in the DB as PENDING
+    import asyncio
+    import uuid
+    from app.db.config.config import AsyncSessionLocal
+    from app.db.models.notification import Notification
+    from app.db.models.enums import NotificationStatus
+
+    async def _save_notification():
+        try:
+            async with AsyncSessionLocal() as session:
+                async with session.begin():
+                    inv_uuid = None
+                    if investigation_id and investigation_id != "manual":
+                        try:
+                            inv_uuid = uuid.UUID(investigation_id)
+                        except ValueError:
+                            pass
+                    
+                    notification = Notification(
+                        investigation_id=inv_uuid,
+                        notification_type="SLACK",
+                        recipient="#incidents",
+                        status=NotificationStatus.PENDING,
+                        metadata_={
+                            "message": message,
+                            "severity": severity,
+                            "container": container_name,
+                            "retry_count": 0,
+                        }
+                    )
+                    session.add(notification)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to record pending notification in DB: {e}")
+
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(_save_notification())
+    except Exception:
+        pass
+
     # Broadcast via WebSocket if manager is available
     if _ws_manager:
-        import asyncio
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():

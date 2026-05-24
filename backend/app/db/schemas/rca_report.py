@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class _RCAReportBase(BaseModel):
     investigation_id: uuid.UUID
     rca_version: int = Field(1, ge=1)
+    is_final: bool = False
     incident_summary: str | None = None
     impact_assessment: str | None = None
     what_failed: str | None = None
@@ -34,6 +35,7 @@ class RCAReportCreate(_RCAReportBase):
 
 class RCAReportUpdate(BaseModel):
     rca_version: int | None = Field(None, ge=1)
+    is_final: bool | None = None
     incident_summary: str | None = None
     impact_assessment: str | None = None
     what_failed: str | None = None

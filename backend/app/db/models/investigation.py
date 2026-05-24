@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
-    Boolean, DateTime, Float, ForeignKey, Index, String, Text
+    Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -56,20 +56,38 @@ class Investigation(Base, TimestampMixin):
     lifecycle_state: Mapped[LifecycleState] = mapped_column(
         SAEnum(LifecycleState, name="lifecycle_state_enum", create_type=False),
         nullable=False,
-        default=LifecycleState.INITIATED,
+        default=LifecycleState.DETECTED,
         index=True,
     )
 
     # ── AI outputs ─────────────────────────────────────────────────────────
-    ai_confidence_score: Mapped[float | None] = mapped_column(
-        Float, nullable=True, comment="0.0 – 1.0"
-    )
     status: Mapped[str | None] = mapped_column(
         String(100), nullable=True,
         comment="Human-readable status message shown in UI"
     )
     root_cause: Mapped[str | None] = mapped_column(Text, nullable=True)
     proposed_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_reasoning_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    thoughts: Mapped[str | None] = mapped_column(
+        Text, nullable=True,
+        comment="Full raw AI reasoning stream (think-aloud text from the LLM)"
+    )
+    decision_trace: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    detected_signals: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    correlation_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, index=True
+    )
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    created_by: Mapped[str] = mapped_column(
+        String(100), nullable=False, default="monitor_worker", server_default="monitor_worker"
+    )
 
     # ── Policy flags ───────────────────────────────────────────────────────
     auto_restart_allowed: Mapped[bool] = mapped_column(
@@ -119,10 +137,6 @@ class Investigation(Base, TimestampMixin):
     )
 
     # ── JSONB (AI reasoning & evidence) ───────────────────────────────────
-    ai_reasoning: Mapped[dict[str, Any] | None] = mapped_column(
-        JSONB, nullable=True, default=dict,
-        comment="Full chain-of-thought from the AI investigator"
-    )
     evidence_found: Mapped[list[Any] | None] = mapped_column(
         JSONB, nullable=True, default=list,
         comment="Structured evidence artifacts collected during analysis"
@@ -201,7 +215,17 @@ class Investigation(Base, TimestampMixin):
         ),
         Index("ix_investigations_created_at", "created_at"),
         Index("ix_investigations_incident_hash", "incident_hash"),
+        Index(
+            "idx_unique_active_investigation_per_container",
+            "container_id",
+            unique=True,
+            postgresql_where="lifecycle_state NOT IN ('RESOLVED', 'REJECTED', 'TIMED_OUT', 'ESCALATED')",
+        ),
     )
+
+    __mapper_args__ = {
+        "version_id_col": version
+    }
 
     def __repr__(self) -> str:
         return (

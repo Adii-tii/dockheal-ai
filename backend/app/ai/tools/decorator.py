@@ -41,6 +41,31 @@ class ToolResult:
 TOOL_METADATA: dict[str, dict] = {}
 
 
+def log_failed_tool(name: str, parameters: dict, investigation_id: str, actor: str, error_msg: str) -> None:
+    import os
+    import json
+    from datetime import datetime, timezone
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    log_dir = os.path.join(base_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    file_path = os.path.join(log_dir, "dead_letter_tools.log")
+    
+    log_entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "investigation_id": investigation_id,
+        "actor": actor,
+        "tool": name,
+        "parameters": parameters,
+        "error": error_msg
+    }
+    try:
+        with open(file_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry) + "\n")
+    except Exception as e:
+        import sys
+        print(f"[DEAD_LETTER] Failed to write tool dead letter: {e}", file=sys.stderr)
+
+
 def mcp_tool(
     name: str,
     description: str,
@@ -81,6 +106,7 @@ def mcp_tool(
                     success=False,
                     output=f"Rejected: illegal parameters {illegal}. Allowed: {allowed_params}",
                 )
+                log_failed_tool(name, kwargs, investigation_id, actor, result.output)
                 return result.to_dict()
 
             # ── Audit: pre-execution entry ─────────────────────────────────────
@@ -98,10 +124,22 @@ def mcp_tool(
 
             # ── Execute ────────────────────────────────────────────────────────
             start = time.perf_counter()
+            import inspect
+            sig = inspect.signature(fn)
+            extra_args = {}
+            if "investigation_id" in sig.parameters:
+                extra_args["investigation_id"] = investigation_id
+            if "actor" in sig.parameters:
+                extra_args["actor"] = actor
+
             try:
-                result: ToolResult = fn(**kwargs)
+                result: ToolResult = fn(**kwargs, **extra_args)
+                if not result.success:
+                    log_failed_tool(name, kwargs, investigation_id, actor, result.output)
             except Exception as e:
-                result = ToolResult(success=False, output=f"Tool raised exception: {e}")
+                error_msg = f"Tool raised exception: {e}"
+                result = ToolResult(success=False, output=error_msg)
+                log_failed_tool(name, kwargs, investigation_id, actor, error_msg)
 
             elapsed_ms = int((time.perf_counter() - start) * 1000)
 

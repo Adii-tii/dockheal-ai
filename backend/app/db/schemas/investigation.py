@@ -18,8 +18,7 @@ class _InvestigationBase(BaseModel):
     title: str = Field(..., max_length=512)
     incident_summary: str | None = None
     severity_level: SeverityLevel = SeverityLevel.P2
-    lifecycle_state: LifecycleState = LifecycleState.INITIATED
-    ai_confidence_score: float | None = Field(None, ge=0.0, le=1.0)
+    lifecycle_state: LifecycleState = LifecycleState.DETECTED
     status: str | None = None
     root_cause: str | None = None
     proposed_action: str | None = None
@@ -30,10 +29,17 @@ class _InvestigationBase(BaseModel):
     rejected_reason: str | None = None
     started_at: datetime | None = None
     resolved_at: datetime | None = None
-    ai_reasoning: dict[str, Any] | None = None
     evidence_found: list[Any] | None = None
     contributing_factors: list[Any] | None = None
     metadata_: dict[str, Any] | None = Field(None, alias="metadata")
+    # ── New fields ─────────────────────────────────────────────────────────────
+    ai_reasoning_summary: str | None = None
+    decision_trace: dict[str, Any] = {}
+    confidence: float | None = Field(None, ge=0.0, le=1.0)
+    detected_signals: list[Any] = []
+    correlation_id: str | None = Field(None, max_length=255)
+    version: int = 1
+    created_by: str = "monitor_worker"
     # ── New operational fields ─────────────────────────────────────────────────
     current_step: str | None = Field(
         None, max_length=255,
@@ -68,7 +74,6 @@ class InvestigationUpdate(BaseModel):
     incident_summary: str | None = None
     severity_level: SeverityLevel | None = None
     lifecycle_state: LifecycleState | None = None
-    ai_confidence_score: float | None = Field(None, ge=0.0, le=1.0)
     status: str | None = None
     root_cause: str | None = None
     proposed_action: str | None = None
@@ -79,10 +84,17 @@ class InvestigationUpdate(BaseModel):
     rejected_reason: str | None = None
     started_at: datetime | None = None
     resolved_at: datetime | None = None
-    ai_reasoning: dict[str, Any] | None = None
     evidence_found: list[Any] | None = None
     contributing_factors: list[Any] | None = None
     metadata_: dict[str, Any] | None = Field(None, alias="metadata")
+    # ── New fields ─────────────────────────────────────────────────────────────
+    ai_reasoning_summary: str | None = None
+    decision_trace: dict[str, Any] | None = None
+    confidence: float | None = Field(None, ge=0.0, le=1.0)
+    detected_signals: list[Any] | None = None
+    correlation_id: str | None = Field(None, max_length=255)
+    version: int | None = None
+    created_by: str | None = None
     # ── New operational fields ─────────────────────────────────────────────────
     current_step: str | None = Field(None, max_length=255)
     recovery_status: RecoveryStatus | None = None
@@ -108,7 +120,7 @@ class InvestigationSummary(BaseModel):
     title: str
     severity_level: SeverityLevel
     lifecycle_state: LifecycleState
-    ai_confidence_score: float | None
+    confidence: float | None
     current_step: str | None
     recovery_status: RecoveryStatus
     is_auto_recovery: bool

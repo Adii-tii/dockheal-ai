@@ -20,6 +20,8 @@ Only the final StructuredAIOutput is stored.
 import os
 import json
 import asyncio
+import uuid
+import logging
 from datetime import datetime, timezone
 from typing import Callable, Awaitable
 
@@ -40,6 +42,16 @@ from app.runtime.state import (
     COOLDOWN_SECONDS,
 )
 
+# DB imports
+from app.db.config.config import AsyncSessionLocal
+from app.db.models import LifecycleState, SeverityLevel, SourceType, RecoveryAction, RCAReport
+from app.db.models.enums import ExecutionStatus
+from app.db.utils.event_logger import update_lifecycle, log_timeline_event
+from app.db.dao.rca_report_dao import RCAReportDAO
+from sqlalchemy import select
+
+logger = logging.getLogger(__name__)
+
 load_dotenv()
 
 _API_KEY = os.getenv("API_KEY")
@@ -51,7 +63,7 @@ _TEMPERATURE     = 0.2
 _MAX_TOKENS      = 1024   # reasoning streams; final JSON is compact
 
 # ── Lifecycle state transitions ────────────────────────────────────────────────
-LIFECYCLE_STATES = ["DETECTED", "INVESTIGATING", "RCA_IDENTIFIED", "AWAITING_APPROVAL", "RECOVERING", "MONITORING", "RESOLVED", "REJECTED"]
+LIFECYCLE_STATES = ["DETECTED", "INVESTIGATING", "RCA_IDENTIFIED", "AWAITING_APPROVAL", "RECOVERING", "MONITORING", "RESOLVED", "REJECTED", "TIMED_OUT", "ESCALATED"]
 
 
 def _set_state(investigation_id: str, state: str, extra: dict | None = None) -> dict:
@@ -64,6 +76,126 @@ def _set_state(investigation_id: str, state: str, extra: dict | None = None) -> 
     return entry
 
 
+async def _update_db_state(
+    investigation_id: uuid.UUID,
+    new_state: LifecycleState,
+    correlation_id: str | None = None,
+    extra_fields: dict | None = None,
+):
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            await update_lifecycle(session, investigation_id, new_state, correlation_id, extra_fields)
+
+
+async def _log_db_timeline_event(
+    investigation_id: uuid.UUID,
+    event_type: str,
+    title: str,
+    description: str | None = None,
+    source_type: SourceType = SourceType.AI_AGENT,
+    severity: SeverityLevel | None = None,
+    correlation_id: str | None = None,
+    extra_context: dict | None = None,
+    raw_data: dict | None = None,
+    tool_output: dict | None = None,
+):
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            await log_timeline_event(
+                session,
+                investigation_id,
+                event_type,
+                title,
+                description,
+                source_type,
+                severity,
+                correlation_id,
+                extra_context,
+                raw_data,
+                tool_output,
+            )
+
+
+async def append_db_and_memory_timeline_event(
+    investigation_id: uuid.UUID,
+    event_type: str,
+    title: str,
+    description: str | None = None,
+    source_type: SourceType = SourceType.AI_AGENT,
+    severity: SeverityLevel | None = None,
+    correlation_id: str | None = None,
+    extra_context: dict | None = None,
+    raw_data: dict | None = None,
+    tool_output: dict | None = None,
+) -> None:
+    # 1. Update DB
+    await _log_db_timeline_event(
+        investigation_id=investigation_id,
+        event_type=event_type,
+        title=title,
+        description=description,
+        source_type=source_type,
+        severity=severity,
+        correlation_id=correlation_id,
+        extra_context=extra_context,
+        raw_data=raw_data,
+        tool_output=tool_output,
+    )
+    
+    # 2. Update memory
+    inv_id_str = str(investigation_id)
+    event = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "type": event_type,
+        "title": title,
+        "description": description or "",
+        "source": source_type.value if hasattr(source_type, "value") else str(source_type),
+        "severity": severity.value if (severity and hasattr(severity, "value")) else (str(severity) if severity else "P3"),
+    }
+    entry = investigation_states.get(inv_id_str, {})
+    if "timeline" not in entry:
+        entry["timeline"] = []
+    entry["timeline"].append(event)
+    investigation_states[inv_id_str] = entry
+
+
+async def _finish_db_and_memory(
+    investigation_id: str,
+    container_name: str,
+    result: dict,
+    packet: dict,
+    execution_results: list,
+    lifecycle: LifecycleState,
+    correlation_id: str | None = None,
+) -> None:
+    inv_uuid = uuid.UUID(investigation_id) if isinstance(investigation_id, str) else investigation_id
+    
+    # 1. Update in-memory state
+    _set_state(investigation_id, lifecycle.value, {"final_result": result})
+    if container_name in context_store:
+        context_store[container_name]["ai_result"] = result
+
+    # 2. Update DB under optimistic locking
+    extra_fields = {
+        "root_cause": result.get("root_cause"),
+        "confidence": result.get("confidence"),
+        "ai_reasoning_summary": result.get("rca_report", {}).get("ai_reasoning_summary") if result.get("rca_report") else (result.get("root_cause") or ""),
+        "decision_trace": {
+            "proposed_actions": result.get("proposed_actions", []),
+            "execution_results": execution_results,
+            "preventive_recommendations": result.get("preventive_recommendations", []),
+            "evidence_citations": result.get("evidence_citations", []),
+        },
+        "detected_signals": packet.get("assessment", {}).get("likely_causes", []),
+        # Persist the full reasoning stream
+        "thoughts": investigation_states.get(investigation_id, {}).get("thoughts") or "",
+    }
+    if lifecycle == LifecycleState.RESOLVED:
+        extra_fields["resolved_at"] = datetime.now(timezone.utc)
+
+    await _update_db_state(inv_uuid, lifecycle, correlation_id, extra_fields)
+
+
 async def append_timeline_event(
     investigation_id: str,
     event_type: str,
@@ -73,6 +205,7 @@ async def append_timeline_event(
     severity: str,
     broadcast: Callable,
 ) -> None:
+    # Deprecated fallback for compatibility with deep_investigator if needed
     event = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "type": event_type,
@@ -111,6 +244,9 @@ async def investigate(
     investigation_id = packet.get("investigation_id", "unknown")
     container_name   = packet.get("incident", {}).get("container", "unknown")
     score            = packet.get("assessment", {}).get("severity_score", 0)
+    
+    inv_uuid = uuid.UUID(investigation_id) if isinstance(investigation_id, str) else investigation_id
+    correlation_id = packet.get("correlation_id") or f"corr_{uuid.uuid4().hex[:12]}"
 
     # Register the task
     current_task = asyncio.current_task()
@@ -119,20 +255,26 @@ async def investigate(
 
     try:
         # ── Lifecycle: INVESTIGATING ───────────────────────────────────────────────
-        severity = packet.get("incident", {}).get("severity", "P2")
+        severity_str = packet.get("incident", {}).get("severity", "P2")
+        try:
+            severity_val = SeverityLevel(severity_str)
+        except ValueError:
+            severity_val = SeverityLevel.P2
+
         _set_state(investigation_id, "INVESTIGATING", {
             "container": container_name,
-            "severity": severity
+            "severity": severity_str
         })
-        await broadcast({
-            "type":             "AI_LIFECYCLE",
-            "investigation_id": investigation_id,
-            "container":        container_name,
-            "severity":         severity,
-            "from_state":       "DETECTED",
-            "to_state":         "INVESTIGATING",
-        })
-        await append_timeline_event(investigation_id, "LOG_COLLECTION", "Investigation Started", f"AI Agent initialized for {container_name}. Analyzing context...", "AI_AGENT", "INFO", broadcast)
+        await _update_db_state(inv_uuid, LifecycleState.INVESTIGATING, correlation_id)
+        await append_db_and_memory_timeline_event(
+            investigation_id=inv_uuid,
+            event_type="LOG_COLLECTION",
+            title="Investigation Started",
+            description=f"AI Agent initialized for {container_name}. Analyzing context...",
+            source_type=SourceType.AI_AGENT,
+            severity=SeverityLevel.P3,
+            correlation_id=correlation_id,
+        )
 
         if not _API_KEY:
             result = {
@@ -144,7 +286,15 @@ async def investigate(
                 "proposed_actions": [],
                 "requires_human":   True,
             }
-            await _finish(investigation_id, container_name, result, broadcast, lifecycle="ESCALATED")
+            await _finish_db_and_memory(
+                investigation_id=investigation_id,
+                container_name=container_name,
+                result=result,
+                packet=packet,
+                execution_results=[],
+                lifecycle=LifecycleState.ESCALATED,
+                correlation_id=correlation_id,
+            )
             return result
 
         # ── Model selection ────────────────────────────────────────────────────────
@@ -201,14 +351,44 @@ async def investigate(
 
         # ── Lifecycle: RCA_IDENTIFIED ─────────────────────────────────────────────────
         _set_state(investigation_id, "RCA_IDENTIFIED")
-        await broadcast({
-            "type":             "AI_LIFECYCLE",
-            "investigation_id": investigation_id,
-            "container":        container_name,
-            "from_state":       "INVESTIGATING",
-            "to_state":         "RCA_IDENTIFIED",
-        })
-        await append_timeline_event(investigation_id, "RCA_GENERATED", "RCA Identified", "Root cause analysis report generated by AI.", "AI_AGENT", "INFO", broadcast)
+        await _update_db_state(inv_uuid, LifecycleState.RCA_IDENTIFIED, correlation_id)
+        await append_db_and_memory_timeline_event(
+            investigation_id=inv_uuid,
+            event_type="RCA_GENERATED",
+            title="RCA Identified",
+            description="Root cause analysis report generated by AI.",
+            source_type=SourceType.AI_AGENT,
+            severity=SeverityLevel.P3,
+            correlation_id=correlation_id,
+        )
+
+        # Create RCA report in DB
+        rca_data = ai_result.get("rca_report")
+        if rca_data:
+            try:
+                async with AsyncSessionLocal() as session:
+                    async with session.begin():
+                        rca_dao = RCAReportDAO(session)
+                        next_v = await rca_dao.next_version(inv_uuid)
+                        rca_obj = RCAReport(
+                            investigation_id=inv_uuid,
+                            rca_version=next_v,
+                            is_final=True,
+                            incident_summary=rca_data.get("incident_summary"),
+                            impact_assessment=rca_data.get("impact_assessment"),
+                            what_failed=rca_data.get("what_failed"),
+                            why_it_happened=rca_data.get("why_it_happened"),
+                            action_proposed=rca_data.get("action_proposed"),
+                            recovery_status=rca_data.get("recovery_status"),
+                            long_term_prevention=rca_data.get("long_term_prevention"),
+                            confidence_score=rca_data.get("confidence_score"),
+                            ai_reasoning_summary=rca_data.get("ai_reasoning_summary"),
+                            evidence_found=[rca_data.get("evidence_found")] if rca_data.get("evidence_found") else [],
+                            contributing_factors=[rca_data.get("contributing_factors")] if rca_data.get("contributing_factors") else [],
+                        )
+                        session.add(rca_obj)
+            except Exception as rca_err:
+                logger.error(f"Failed to save RCAReport in DB: {rca_err}")
 
         # ── Broadcast complete result (before execution) ───────────────────────────
         await broadcast({
@@ -231,21 +411,33 @@ async def investigate(
         if needs_deep_loop:
             ai_result = await deep_investigation_loop(packet, ai_result, broadcast)
             packet["ai_result"] = ai_result
+            # Broadcast the updated final result after the deep investigation loop completes
+            await broadcast({
+                "type":             "AI_INVESTIGATION_COMPLETE",
+                "investigation_id": investigation_id,
+                "container":        container_name,
+                "result":           ai_result,
+                "lifecycle_state":  "RCA_IDENTIFIED",
+            })
+
+        from app.runtime.policy_registry import POLICIES
 
         # ── Requires human → skip execution if no actions ──────────────────────────
-        if (ai_result.get("requires_human") and not ai_result.get("proposed_actions")) or not ai_result.get("proposed_actions"):
-            await _finish(investigation_id, container_name, ai_result, broadcast, lifecycle="RESOLVED")
+        if (ai_result.get("requires_human") and not ai_result.get("proposed_actions")) or not ai_result.get("proposed_actions") or POLICIES.agent_mode == "Manual":
+            await _finish_db_and_memory(
+                investigation_id=investigation_id,
+                container_name=container_name,
+                result=ai_result,
+                packet=packet,
+                execution_results=[],
+                lifecycle=LifecycleState.RESOLVED,
+                correlation_id=correlation_id,
+            )
             return ai_result
 
         # ── Execute proposed actions through sandbox + guardrails ──────────────────
         _set_state(investigation_id, "RECOVERING")
-        await broadcast({
-            "type":             "AI_LIFECYCLE",
-            "investigation_id": investigation_id,
-            "container":        container_name,
-            "from_state":       "RCA_IDENTIFIED",
-            "to_state":         "RECOVERING",
-        })
+        await _update_db_state(inv_uuid, LifecycleState.RECOVERING, correlation_id)
 
         execution_results = []
         any_executed      = False
@@ -270,12 +462,20 @@ async def investigate(
                     "layer":            "sandbox",
                     "reason":           sandbox_result.blocking_reason,
                 })
-                await append_timeline_event(investigation_id, "SANDBOX_BLOCKED", "Execution Blocked", f"{tool_name} was blocked by sandbox policies.", "SANDBOX", "WARN", broadcast)
+                await append_db_and_memory_timeline_event(
+                    investigation_id=inv_uuid,
+                    event_type="SANDBOX_BLOCKED",
+                    title="Execution Blocked",
+                    description=f"{tool_name} was blocked by sandbox policies.",
+                    source_type=SourceType.SYSTEM,
+                    severity=SeverityLevel.P2,
+                    correlation_id=correlation_id,
+                )
                 continue
 
             # Guardrail check
             gd = guardrails_check(tool_name, parameters, packet, investigation_id)
-            requires_approval = ai_result.get("requires_human") or gd.action == "escalate"
+            requires_approval = (POLICIES.agent_mode == "Co-Pilot") or ai_result.get("requires_human") or gd.action == "escalate"
 
             if not gd.allowed and not requires_approval:
                 execution_results.append({
@@ -294,39 +494,109 @@ async def investigate(
                 continue
 
             if requires_approval:
-                _set_state(investigation_id, "AWAITING_APPROVAL")
+                extra_fields = {
+                    "root_cause": ai_result.get("root_cause"),
+                    "confidence": ai_result.get("confidence"),
+                    "ai_reasoning_summary": ai_result.get("rca_report", {}).get("ai_reasoning_summary") if ai_result.get("rca_report") else (ai_result.get("root_cause") or ""),
+                    "decision_trace": {
+                        "proposed_actions": ai_result.get("proposed_actions", []),
+                        "execution_results": [],
+                        "preventive_recommendations": ai_result.get("preventive_recommendations", []),
+                        "evidence_citations": ai_result.get("evidence_citations", []),
+                    },
+                }
+                _set_state(investigation_id, "AWAITING_APPROVAL", {"final_result": ai_result, "result": ai_result})
+                await _update_db_state(inv_uuid, LifecycleState.AWAITING_APPROVAL, correlation_id, extra_fields)
                 await broadcast({
-                    "type":             "AI_LIFECYCLE",
+                    "type":             "AI_INVESTIGATION_COMPLETE",
                     "investigation_id": investigation_id,
                     "container":        container_name,
-                    "from_state":       "RECOVERING",
-                    "to_state":         "AWAITING_APPROVAL",
+                    "result":           ai_result,
+                    "lifecycle_state":  "AWAITING_APPROVAL",
                 })
-                await append_timeline_event(investigation_id, "APPROVAL_REQUIRED", "Approval Required", f"Action {tool_name} requires operator sign-off.", "SYSTEM", "WARN", broadcast)
+                await append_db_and_memory_timeline_event(
+                    investigation_id=inv_uuid,
+                    event_type="APPROVAL_REQUIRED",
+                    title="Approval Required",
+                    description=f"Action {tool_name} requires operator sign-off.",
+                    source_type=SourceType.SYSTEM,
+                    severity=SeverityLevel.P2,
+                    correlation_id=correlation_id,
+                )
                 
                 from app.runtime.state import approval_events, approval_results
                 approval_events[investigation_id] = asyncio.Event()
                 try:
-                    await asyncio.wait_for(approval_events[investigation_id].wait(), timeout=600)
+                    # 5-minute timeout deadline
+                    await asyncio.wait_for(approval_events[investigation_id].wait(), timeout=300)
                     res = approval_results.get(investigation_id, {})
                     if res.get("status") == "approved":
-                        await append_timeline_event(investigation_id, "ACTION_APPROVED", "Action Approved", f"Approved by {res.get('user', 'Operator')}.", "OPERATOR", "INFO", broadcast)
+                        await append_db_and_memory_timeline_event(
+                            investigation_id=inv_uuid,
+                            event_type="ACTION_APPROVED",
+                            title="Action Approved",
+                            description=f"Approved by {res.get('user', 'Operator')}.",
+                            source_type=SourceType.HUMAN,
+                            severity=SeverityLevel.P3,
+                            correlation_id=correlation_id,
+                        )
                         _set_state(investigation_id, "RECOVERING")
-                        await broadcast({"type": "AI_LIFECYCLE", "investigation_id": investigation_id, "container": container_name, "from_state": "AWAITING_APPROVAL", "to_state": "RECOVERING"})
+                        await _update_db_state(inv_uuid, LifecycleState.RECOVERING, correlation_id)
                     else:
-                        await append_timeline_event(investigation_id, "ACTION_REJECTED", "Action Rejected", f"Rejected by {res.get('user', 'Operator')}.", "OPERATOR", "WARN", broadcast)
+                        await append_db_and_memory_timeline_event(
+                            investigation_id=inv_uuid,
+                            event_type="ACTION_REJECTED",
+                            title="Action Rejected",
+                            description=f"Rejected by {res.get('user', 'Operator')}.",
+                            source_type=SourceType.HUMAN,
+                            severity=SeverityLevel.P2,
+                            correlation_id=correlation_id,
+                        )
                         execution_results.append({"tool": tool_name, "outcome": "rejected_by_operator"})
                         _set_state(investigation_id, "REJECTED")
-                        await broadcast({"type": "AI_LIFECYCLE", "investigation_id": investigation_id, "container": container_name, "from_state": "AWAITING_APPROVAL", "to_state": "REJECTED"})
-                        continue
+                        await _update_db_state(inv_uuid, LifecycleState.REJECTED, correlation_id)
+                        break
                 except asyncio.TimeoutError:
-                    await append_timeline_event(investigation_id, "APPROVAL_TIMEOUT", "Approval Timeout", "No response in 10 minutes. Action auto-rejected.", "SYSTEM", "WARN", broadcast)
-                    execution_results.append({"tool": tool_name, "outcome": "timeout_rejected"})
-                    _set_state(investigation_id, "REJECTED")
-                    await broadcast({"type": "AI_LIFECYCLE", "investigation_id": investigation_id, "container": container_name, "from_state": "AWAITING_APPROVAL", "to_state": "REJECTED"})
-                    continue
+                    is_high_severity = severity_str in ("P0", "P1")
+                    timeout_state = LifecycleState.ESCALATED if is_high_severity else LifecycleState.TIMED_OUT
+                    
+                    _set_state(investigation_id, timeout_state.value)
+                    await _update_db_state(inv_uuid, timeout_state, correlation_id)
+                    
+                    if timeout_state == LifecycleState.ESCALATED:
+                        await append_db_and_memory_timeline_event(
+                            investigation_id=inv_uuid,
+                            event_type="APPROVAL_TIMEOUT",
+                            title="Approval Timeout - Escalated",
+                            description="No response in 5 minutes. Action auto-rejected and escalated.",
+                            source_type=SourceType.SYSTEM,
+                            severity=SeverityLevel.P1,
+                            correlation_id=correlation_id,
+                        )
+                        execution_results.append({"tool": tool_name, "outcome": "timeout_escalated"})
+                    else:
+                        await append_db_and_memory_timeline_event(
+                            investigation_id=inv_uuid,
+                            event_type="APPROVAL_TIMEOUT",
+                            title="Approval Timeout - Timed Out",
+                            description="No response in 5 minutes. Action timed out.",
+                            source_type=SourceType.SYSTEM,
+                            severity=SeverityLevel.P2,
+                            correlation_id=correlation_id,
+                        )
+                        execution_results.append({"tool": tool_name, "outcome": "timeout_rejected"})
+                    
+                    break
 
-            await append_timeline_event(investigation_id, "TOOL_EXECUTION", "Executing Action", f"Running {tool_name} with provided parameters.", "AI_AGENT", "INFO", broadcast)
+            await append_db_and_memory_timeline_event(
+                investigation_id=inv_uuid,
+                event_type="TOOL_EXECUTION",
+                title="Executing Action",
+                description=f"Running {tool_name} with provided parameters.",
+                source_type=SourceType.AI_AGENT,
+                severity=SeverityLevel.P2,
+                correlation_id=correlation_id,
+            )
 
             await broadcast({
                 "type":             "TOOL_EXECUTING",
@@ -337,12 +607,77 @@ async def investigate(
                 "warnings":         gd.soft_warnings,
             })
 
+            # Create a RecoveryAction record in DB
+            recovery_action_id = None
+            try:
+                async with AsyncSessionLocal() as session:
+                    async with session.begin():
+                        recovery_action = RecoveryAction(
+                            investigation_id=inv_uuid,
+                            action_name=tool_name,
+                            action_type="CUSTOM",
+                            execution_status=ExecutionStatus.RUNNING,
+                            started_at=datetime.now(timezone.utc),
+                            parameters=parameters,
+                            correlation_id=correlation_id,
+                        )
+                        session.add(recovery_action)
+                        await session.flush()
+                        recovery_action_id = recovery_action.id
+            except Exception as db_err:
+                logger.error(f"Failed to insert RecoveryAction start record to DB: {db_err}")
+
             tool_result = execute_tool(
                 tool_name        = tool_name,
                 parameters       = parameters,
                 investigation_id = investigation_id,
                 actor            = "ai_auto",
             )
+
+            # Log tool execution to timeline
+            success = tool_result.get("success", False) if isinstance(tool_result, dict) else False
+            out_str = tool_result.get("output", "") if isinstance(tool_result, dict) else str(tool_result)
+            
+            if tool_name == "restart_container" and success:
+                await append_db_and_memory_timeline_event(
+                    investigation_id=inv_uuid,
+                    event_type="CONTAINER_RESTART",
+                    title="Container Restarted by AI Agent",
+                    description=f"Container '{container_name}' was restarted successfully by the AI agent at {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC. Reason: {action.get('rationale') or 'RCA remediation'}",
+                    source_type=SourceType.AI_AGENT,
+                    severity=SeverityLevel.P3,
+                    correlation_id=correlation_id,
+                )
+            else:
+                await append_db_and_memory_timeline_event(
+                    investigation_id=inv_uuid,
+                    event_type="TOOL_EXECUTED",
+                    title=f"Tool Executed: {tool_name}",
+                    description=f"Tool executed. Status: {'SUCCESS' if success else 'FAILED'}. Output: {out_str[:200]}...",
+                    source_type=SourceType.AI_AGENT,
+                    severity=SeverityLevel.P3 if success else SeverityLevel.P2,
+                    correlation_id=correlation_id,
+                )
+
+            # Update the RecoveryAction record in DB
+            if recovery_action_id:
+                try:
+                    success = tool_result.get("success", False) if isinstance(tool_result, dict) else False
+                    status = ExecutionStatus.SUCCESS if success else ExecutionStatus.FAILED
+                    logs = json.dumps(tool_result) if tool_result else ""
+                    
+                    async with AsyncSessionLocal() as session:
+                        async with session.begin():
+                            res = await session.execute(
+                                select(RecoveryAction).where(RecoveryAction.id == recovery_action_id)
+                            )
+                            rec_act = res.scalar_one_or_none()
+                            if rec_act:
+                                rec_act.execution_status = status
+                                rec_act.execution_logs = logs
+                                rec_act.completed_at = datetime.now(timezone.utc)
+                except Exception as db_err:
+                    logger.error(f"Failed to update RecoveryAction end record in DB: {db_err}")
 
             execution_results.append({
                 "tool":    tool_name,
@@ -369,42 +704,131 @@ async def investigate(
         # ── Lifecycle: RESOLVED or ESCALATED ──────────────────────────────────────
         if any_executed:
             _set_state(investigation_id, "MONITORING")
-            await broadcast({
-                "type":             "AI_LIFECYCLE",
-                "investigation_id": investigation_id,
-                "container":        container_name,
-                "from_state":       "RECOVERING",
-                "to_state":         "MONITORING",
-            })
-            await append_timeline_event(investigation_id, "MONITORING_HEALTH", "Monitoring Health", f"Verifying container recovery for {container_name}...", "AI_AGENT", "INFO", broadcast)
+            await _update_db_state(inv_uuid, LifecycleState.MONITORING, correlation_id)
+            
+            await append_db_and_memory_timeline_event(
+                investigation_id=inv_uuid,
+                event_type="MONITORING_HEALTH",
+                title="Monitoring Health",
+                description=f"Verifying container recovery for {container_name}...",
+                source_type=SourceType.AI_AGENT,
+                severity=SeverityLevel.P3,
+                correlation_id=correlation_id,
+            )
             await asyncio.sleep(2)  # Simulate brief monitoring phase
 
         final_state = "RESOLVED" if any_executed else "ESCALATED"
         if final_state == "RESOLVED":
-            await append_timeline_event(investigation_id, "INCIDENT_RESOLVED", "Incident Resolved", f"Container {container_name} is operating normally.", "SYSTEM", "INFO", broadcast)
+            await append_db_and_memory_timeline_event(
+                investigation_id=inv_uuid,
+                event_type="INCIDENT_RESOLVED",
+                title="Incident Resolved",
+                description=f"Container {container_name} is operating normally.",
+                source_type=SourceType.SYSTEM,
+                severity=SeverityLevel.P3,
+                correlation_id=correlation_id,
+            )
         else:
-            await append_timeline_event(investigation_id, "INCIDENT_ESCALATED", "Incident Escalated", "Unable to fully remediate. Escalating to human operators.", "SYSTEM", "WARN", broadcast)
+            await append_db_and_memory_timeline_event(
+                investigation_id=inv_uuid,
+                event_type="INCIDENT_ESCALATED",
+                title="Incident Escalated",
+                description="Unable to fully remediate. Escalating to human operators.",
+                source_type=SourceType.SYSTEM,
+                severity=SeverityLevel.P2,
+                correlation_id=correlation_id,
+            )
 
         ai_result["execution_results"] = execution_results
-        await _finish(investigation_id, container_name, ai_result, broadcast, lifecycle=final_state)
+        final_lifecycle = LifecycleState.RESOLVED if final_state == "RESOLVED" else LifecycleState.ESCALATED
+        
+        await _finish_db_and_memory(
+            investigation_id=investigation_id,
+            container_name=container_name,
+            result=ai_result,
+            packet=packet,
+            execution_results=execution_results,
+            lifecycle=final_lifecycle,
+            correlation_id=correlation_id,
+        )
 
         return ai_result
     except asyncio.CancelledError:
-        await _finish(
-            investigation_id,
-            container_name,
-            {
+        from app.runtime.state import cancellation_reasons
+        reason = cancellation_reasons.pop(investigation_id, "paused")
+        if reason == "restarted":
+            raise
+        if reason == "stopped":
+            lifecycle_state = LifecycleState.REJECTED
+            rc_message = "Investigation stopped/aborted."
+            event_type = "INVESTIGATION_STOPPED"
+            event_title = "Investigation Stopped"
+            event_desc = "Investigation has been stopped/aborted by the operator."
+        else:
+            lifecycle_state = LifecycleState.PAUSED
+            rc_message = "Investigation paused."
+            event_type = "INVESTIGATION_PAUSED"
+            event_title = "Investigation Paused"
+            event_desc = "Investigation has been paused. The operator can resume it later."
+
+        await _finish_db_and_memory(
+            investigation_id=investigation_id,
+            container_name=container_name,
+            result={
                 "investigation_id": investigation_id,
                 "container":        container_name,
-                "root_cause":       "Investigation stopped by user.",
+                "root_cause":       rc_message,
                 "confidence":       0.0,
                 "evidence_citations": [],
                 "proposed_actions": [],
                 "requires_human":   False,
             },
-            broadcast,
-            lifecycle="RESOLVED"
+            packet=packet,
+            execution_results=[],
+            lifecycle=lifecycle_state,
+            correlation_id=correlation_id,
         )
+        await append_db_and_memory_timeline_event(
+            investigation_id=inv_uuid,
+            event_type=event_type,
+            title=event_title,
+            description=event_desc,
+            source_type=SourceType.SYSTEM,
+            severity=SeverityLevel.P3,
+            correlation_id=correlation_id,
+        )
+        raise
+    except Exception as e:
+        logger.error(f"Investigation crashed with error: {e}", exc_info=True)
+        await _finish_db_and_memory(
+            investigation_id=investigation_id,
+            container_name=container_name,
+            result={
+                "investigation_id": investigation_id,
+                "container":        container_name,
+                "root_cause":       f"Investigation crashed: {str(e)}",
+                "confidence":       0.0,
+                "evidence_citations": [],
+                "proposed_actions": [],
+                "requires_human":   True,
+            },
+            packet=packet,
+            execution_results=[],
+            lifecycle=LifecycleState.ESCALATED,
+            correlation_id=correlation_id,
+        )
+        try:
+            await append_db_and_memory_timeline_event(
+                investigation_id=inv_uuid,
+                event_type="INCIDENT_ESCALATED",
+                title="Investigation Crashed",
+                description=f"AI Agent encountered an internal crash: {str(e)}. Escalating to human operators.",
+                source_type=SourceType.SYSTEM,
+                severity=SeverityLevel.P1,
+                correlation_id=correlation_id,
+            )
+        except Exception:
+            pass
         raise
     finally:
         from app.runtime.state import active_tasks
@@ -446,7 +870,11 @@ async def _stream_mistral(
             if delta:
                 full_text += delta
                 sequence  += 1
-                # Broadcast chunk — ephemeral, not stored after send
+                # Accumulate in-memory (for persistence at end of investigation)
+                entry = investigation_states.get(investigation_id, {})
+                entry["thoughts"] = (entry.get("thoughts") or "") + delta
+                investigation_states[investigation_id] = entry
+                # Broadcast chunk
                 await broadcast({
                     "type":             "AI_THOUGHT",
                     "investigation_id": investigation_id,
@@ -465,26 +893,3 @@ async def _stream_mistral(
         })
 
     return full_text
-
-
-async def _finish(
-    investigation_id: str,
-    container_name:   str,
-    result:           dict,
-    broadcast:        Callable[[dict], Awaitable[None]],
-    lifecycle:        str = "RESOLVED",
-) -> None:
-    """Transition to terminal lifecycle state and broadcast."""
-    prev = investigation_states.get(investigation_id, {}).get("state", "EXECUTING")
-    _set_state(investigation_id, lifecycle, {"final_result": result})
-    # Update context_store with final output
-    if container_name in context_store:
-        context_store[container_name]["ai_result"] = result
-
-    await broadcast({
-        "type":             "AI_LIFECYCLE",
-        "investigation_id": investigation_id,
-        "container":        container_name,
-        "from_state":       prev,
-        "to_state":         lifecycle,
-    })

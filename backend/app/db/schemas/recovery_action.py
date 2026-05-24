@@ -20,6 +20,9 @@ class _RecoveryActionBase(BaseModel):
     execution_status: ExecutionStatus = ExecutionStatus.PENDING
     execution_logs: str | None = None
     rollback_available: bool = False
+    rollback_executed: bool = False
+    rollback_status: str | None = Field(None, max_length=100)
+    correlation_id: str | None = Field(None, max_length=255)
     started_at: datetime | None = None
     completed_at: datetime | None = None
     parameters: dict[str, Any] | None = None
@@ -35,6 +38,9 @@ class RecoveryActionUpdate(BaseModel):
     execution_status: ExecutionStatus | None = None
     execution_logs: str | None = None
     rollback_available: bool | None = None
+    rollback_executed: bool | None = None
+    rollback_status: str | None = Field(None, max_length=100)
+    correlation_id: str | None = Field(None, max_length=255)
     started_at: datetime | None = None
     completed_at: datetime | None = None
     parameters: dict[str, Any] | None = None

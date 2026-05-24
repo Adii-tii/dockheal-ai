@@ -42,6 +42,9 @@ class PolicyRegistry:
     recovery_poll_interval_secs: float = 2.0   # how often to poll post-restart
     recovery_timeout_secs:       int   = 30    # give up verifying after this long
 
+    # ── Agent Execution Mode ──────────────────────────────────────────────────────
+    agent_mode:                  str   = "Co-Pilot" # Manual, Co-Pilot, or Auto
+
     def load_from_env(self) -> "PolicyRegistry":
         """Override any field from environment variables (prefixed DOCKHEAL_)."""
         mapping = {
@@ -88,9 +91,44 @@ class PolicyRegistry:
                         setattr(self, k, v)
                 except (ValueError, TypeError):
                     pass
+        self.save_to_file()
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+    def save_to_file(self):
+        import json
+        filepath = os.path.join(os.path.dirname(__file__), ".policies.json")
+        try:
+            with open(filepath, "w") as f:
+                json.dump(self.as_dict(), f, indent=2)
+        except Exception:
+            pass
+
+    def load_from_file(self) -> "PolicyRegistry":
+        import json
+        filepath = os.path.join(os.path.dirname(__file__), ".policies.json")
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, "r") as f:
+                    data = json.load(f)
+                    for k, v in data.items():
+                        if hasattr(self, k):
+                            orig_val = getattr(self, k)
+                            if isinstance(orig_val, bool):
+                                if isinstance(v, str):
+                                    setattr(self, k, v.lower() in ("true", "1", "yes", "on"))
+                                else:
+                                    setattr(self, k, bool(v))
+                            elif isinstance(orig_val, int):
+                                setattr(self, k, int(v))
+                            elif isinstance(orig_val, float):
+                                setattr(self, k, float(v))
+                            else:
+                                setattr(self, k, v)
+            except Exception:
+                pass
+        return self
 
     def apply_deterministic_severity(
         self,
@@ -116,4 +154,4 @@ class PolicyRegistry:
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────────
-POLICIES = PolicyRegistry().load_from_env()
+POLICIES = PolicyRegistry().load_from_env().load_from_file()

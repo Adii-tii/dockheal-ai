@@ -26,6 +26,12 @@ except Exception as e:
     phase=1,
 )
 def restart_container_tool(container_name: str) -> ToolResult:
+    if container_name.startswith("mock-"):
+        return ToolResult(
+            success=True,
+            output=f"{container_name} restarted successfully (was: exited, now: running)",
+            side_effects=[f"Container '{container_name}' restarted"],
+        )
     if not _client:
         return ToolResult(success=False, output="Docker client unavailable")
     try:
@@ -52,6 +58,20 @@ def restart_container_tool(container_name: str) -> ToolResult:
     phase=1,
 )
 def fetch_logs_tool(container_name: str, tail: int = 50) -> ToolResult:
+    if container_name.startswith("mock-"):
+        if "oom" in container_name:
+            logs = "[mock] 2026-05-23T18:00:00Z webapp: starting server...\n[mock] 2026-05-23T18:01:15Z webapp: allocate memory pool\n[mock] 2026-05-23T18:02:30Z FATAL: OutOfMemoryError: Java heap space\n[mock] 2026-05-23T18:02:31Z Kern: Out of memory: Kill process 12345 (java) score 850 or sacrifice child"
+        elif "crash" in container_name:
+            logs = "[mock] 2026-05-23T18:00:00Z db: starting PostgreSQL...\n[mock] 2026-05-23T18:00:01Z FATAL:  lock file \"postmaster.pid\" already exists\n[mock] 2026-05-23T18:00:01Z HINT:  Is another postmaster (PID 48) running in data directory \"/var/lib/postgresql/data\"?"
+        elif "nginx" in container_name:
+            logs = "[mock] 2026-05-23T18:00:00Z nginx: starting worker processes...\n[mock] 2026-05-23T18:05:12Z [error] 31#31: *124 connect() failed (111: Connection refused) while connecting to upstream, client: 127.0.0.1, server: localhost, request: \"GET /api/v1/users HTTP/1.1\", upstream: \"http://127.0.0.1:8080/api/v1/users\""
+        elif "rate" in container_name:
+            logs = "[mock] 2026-05-23T18:00:00Z gateway: rate limiter active\n[mock] 2026-05-23T18:02:40Z WARNING: rate limit breached for client 192.168.1.100 (1500 req/sec > limit 1000)"
+        elif "disk" in container_name:
+            logs = "[mock] 2026-05-23T18:00:00Z logger: flushing write buffer\n[mock] 2026-05-23T18:01:05Z ERROR: write failed: No space left on device (ENOSPC)"
+        else:
+            logs = "[mock] container logs"
+        return ToolResult(success=True, output=logs)
     if not _client:
         return ToolResult(success=False, output="Docker client unavailable")
     tail = min(int(tail), 200)   # hard cap — AI cannot request unbounded logs
@@ -78,6 +98,25 @@ def fetch_logs_tool(container_name: str, tail: int = 50) -> ToolResult:
     phase=1,
 )
 def inspect_container_tool(container_name: str) -> ToolResult:
+    if container_name.startswith("mock-"):
+        import json
+        summary = {
+            "id":            f"mock-{container_name}-id",
+            "name":          container_name,
+            "status":        "exited" if "oom" in container_name or "crash" in container_name else "running",
+            "image":         f"{container_name}:latest",
+            "restart_count": 5 if "crash" in container_name else 0,
+            "exit_code":     137 if "oom" in container_name else (1 if "crash" in container_name else 0),
+            "oom_killed":    "oom" in container_name,
+            "started_at":    "2026-05-23T18:00:00Z",
+            "finished_at":   "2026-05-23T18:02:30Z",
+            "health":        "unhealthy" if "nginx" in container_name else "healthy",
+        }
+        return ToolResult(
+            success=True,
+            output=json.dumps(summary, indent=2),
+            side_effects=[],
+        )
     if not _client:
         return ToolResult(success=False, output="Docker client unavailable")
     try:

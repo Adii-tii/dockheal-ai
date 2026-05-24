@@ -30,6 +30,13 @@ class ContainerDAO(BaseDAO[Container]):
         )
         return result.scalar_one_or_none()
 
+    async def get_by_runtime_id(self, runtime_id: str) -> Container | None:
+        """Look up a container by its unique Docker runtime ID."""
+        result = await self.session.execute(
+            select(Container).where(Container.runtime_id == runtime_id)
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_status(
         self, status: ContainerStatus, *, limit: int = 100, offset: int = 0
     ) -> Sequence[Container]:
@@ -78,3 +85,15 @@ class ContainerDAO(BaseDAO[Container]):
         if existing:
             return await self.update_instance(existing, **kwargs)
         return await self.create(**kwargs)
+
+    async def upsert_by_runtime_id(self, runtime_id: str, **kwargs: object) -> Container:
+        """
+        Insert or update a container by its runtime ID.
+
+        If a container with the given `runtime_id` already exists,
+        update its fields; otherwise create a new record.
+        """
+        existing = await self.get_by_runtime_id(runtime_id)
+        if existing:
+            return await self.update_instance(existing, **kwargs)
+        return await self.create(runtime_id=runtime_id, **kwargs)

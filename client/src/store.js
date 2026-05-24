@@ -8,6 +8,7 @@ export const useStore = create((set, get) => ({
   incidents: [],
   metrics: {},       // keyed by container name
   loading: true,
+  triggeringContainers: [], // container names currently triggering investigation,
 
   // ── AI Investigation state ────────────────────────────────────────────────
   investigations: {}, // keyed by investigation_id
@@ -31,6 +32,9 @@ export const useStore = create((set, get) => ({
     sandboxValidations: 0,
   },
 
+  // ── API Call Logs ──────────────────────────────────────────────────────────
+  callLogs: { total: 0, logs: [] },
+
   // ── Actions ───────────────────────────────────────────────────────────────
 
   pushActivity: (entry) => set(s => ({
@@ -38,19 +42,46 @@ export const useStore = create((set, get) => ({
   })),
 
   fetchData: async () => {
+    // AbortController lets us cancel stuck fetches after 12 seconds
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 12000)
+    const opts = { signal: controller.signal }
+
     try {
-      const [cRes, iRes, mRes, invRes] = await Promise.all([
-        fetch(`${API}/containers`),
-        fetch(`${API}/incidents`),
-        fetch(`${API}/containers/metrics`),
-        fetch(`${API}/investigations`),
+      // Fast path: containers + incidents + metrics load together
+      // Investigations is intentionally excluded — it's DB-heavy and slow.
+      // It loads separately so the UI is never blocked by a slow query.
+      const [cRes, iRes, mRes] = await Promise.all([
+        fetch(`${API}/containers`, opts),
+        fetch(`${API}/incidents`, opts),
+        fetch(`${API}/containers/metrics`, opts),
       ])
+      clearTimeout(timeout)
+
       const containers = await cRes.json()
       const incidents  = await iRes.json()
       const metricsArr = await mRes.json()
+
+      const metrics = {}
+      for (const m of metricsArr) metrics[m.name] = m
+
+      // Unblock the UI immediately — investigations load async below
+      set({ containers, incidents, metrics, loading: false })
+      get().fetchPolicies()
+    } catch (e) {
+      clearTimeout(timeout)
+      if (e.name !== 'AbortError') console.error('fetchData (fast) failed', e)
+      set({ loading: false })
+    }
+
+    // Slow path: investigations with DB joins — runs in background
+    try {
+      const invController = new AbortController()
+      const invTimeout = setTimeout(() => invController.abort(), 20000)
+      const invRes = await fetch(`${API}/investigations`, { signal: invController.signal })
+      clearTimeout(invTimeout)
       const investigationsRaw = await invRes.json()
 
-      // Ensure every entry has investigation_id from its dictionary key
       const investigations = {}
       for (const [id, val] of Object.entries(investigationsRaw)) {
         investigations[id] = {
@@ -60,14 +91,10 @@ export const useStore = create((set, get) => ({
           result: val.final_result || val.result
         }
       }
-
-      const metrics = {}
-      for (const m of metricsArr) metrics[m.name] = m
-
-      set({ containers, incidents, metrics, investigations, loading: false })
+      set({ investigations })
     } catch (e) {
-      console.error('fetchData failed', e)
-      set({ loading: false })
+      if (e.name !== 'AbortError') console.error('fetchData (investigations) failed', e)
+      // Don't touch loading — UI is already unblocked
     }
   },
 
@@ -110,6 +137,26 @@ export const useStore = create((set, get) => ({
     } catch (e) { console.error('fetchSandboxTools failed', e) }
   },
 
+  fetchCallLogs: async () => {
+    try {
+      const res = await fetch(`${API}/api-call-logs?limit=200`)
+      const data = await res.json()
+      set({ callLogs: data })
+    } catch (e) { console.error('fetchCallLogs failed', e) }
+  },
+
+  fetchContainerLogs: async (containerName, tail = 100) => {
+    try {
+      const res = await fetch(`${API}/containers/${containerName}/logs?tail=${tail}`)
+      if (!res.ok) throw new Error("Failed to fetch container logs")
+      const data = await res.json()
+      return data.logs
+    } catch (e) {
+      console.error('fetchContainerLogs failed', e)
+      return `Error fetching logs: ${e.message}`
+    }
+  },
+
   blockSandboxTool: async (toolName) => {
     get().pushActivity({ level: 'SAFEGUARD', message: `Blocking tool in sandbox: ${toolName}` })
     try {
@@ -132,13 +179,46 @@ export const useStore = create((set, get) => ({
     } catch (e) { console.error('unblockSandboxTool failed', e) }
   },
 
-  triggerInvestigation: async (containerName) => {
+  triggerInvestigation: async (containerName, operatorLogs = null) => {
+    set(s => ({ triggeringContainers: [...s.triggeringContainers, containerName] }))
     get().pushActivity({ level: 'AI', message: `AI investigation started for ${containerName}` })
     try {
-      const res = await fetch(`${API}/investigate/${containerName}`, { method: 'POST' })
+      const fetchOpts = {
+        method: 'POST',
+      }
+      if (operatorLogs) {
+        fetchOpts.headers = { 'Content-Type': 'application/json' }
+        fetchOpts.body = JSON.stringify({ operator_logs: operatorLogs })
+      }
+      const res = await fetch(`${API}/investigate/${containerName}`, fetchOpts)
       if (!res.ok) throw new Error(await res.text())
+      await get().fetchData()
     } catch (e) {
       console.error('triggerInvestigation failed', e)
+    } finally {
+      set(s => ({ triggeringContainers: s.triggeringContainers.filter(c => c !== containerName) }))
+    }
+  },
+
+  pauseInvestigation: async (containerName) => {
+    get().pushActivity({ level: 'AI', message: `Pausing AI investigation for ${containerName}...` })
+    try {
+      const res = await fetch(`${API}/investigate/${containerName}/pause`, { method: 'POST' })
+      if (!res.ok) throw new Error(await res.text())
+      await get().fetchData()
+    } catch (e) {
+      console.error('pauseInvestigation failed', e)
+    }
+  },
+
+  stopInvestigation: async (containerName) => {
+    get().pushActivity({ level: 'AI', message: `Stopping AI investigation for ${containerName}...` })
+    try {
+      const res = await fetch(`${API}/investigate/${containerName}/stop`, { method: 'POST' })
+      if (!res.ok) throw new Error(await res.text())
+      await get().fetchData()
+    } catch (e) {
+      console.error('stopInvestigation failed', e)
     }
   },
 
@@ -147,6 +227,7 @@ export const useStore = create((set, get) => ({
     try {
       const res = await fetch(`${API}/investigations/stop-all`, { method: 'POST' })
       if (!res.ok) throw new Error(await res.text())
+      await get().fetchData()
     } catch (e) {
       console.error('stopAllInvestigations failed', e)
     }
@@ -178,6 +259,33 @@ export const useStore = create((set, get) => ({
       await fetch(`${API}/restart/${containerName}`, { method: 'POST' })
       get().fetchData()
     } catch (e) { console.error('restart failed', e) }
+  },
+
+  startContainer: async (containerName) => {
+    get().pushActivity({ level: 'INFO', message: `Starting container ${containerName}...` })
+    try {
+      const res = await fetch(`${API}/start/${containerName}`, { method: 'POST' })
+      if (!res.ok) throw new Error(await res.text())
+      get().fetchData()
+    } catch (e) { console.error('start container failed', e) }
+  },
+
+  deleteContainer: async (containerName) => {
+    get().pushActivity({ level: 'SAFEGUARD', message: `Deleting container ${containerName}...` })
+    try {
+      const res = await fetch(`${API}/delete/${containerName}`, { method: 'POST' })
+      if (!res.ok) throw new Error(await res.text())
+      get().fetchData()
+    } catch (e) { console.error('delete container failed', e) }
+  },
+
+  stopContainer: async (containerName) => {
+    get().pushActivity({ level: 'INFO', message: `Stopping container ${containerName}...` })
+    try {
+      const res = await fetch(`${API}/stop/${containerName}`, { method: 'POST' })
+      if (!res.ok) throw new Error(await res.text())
+      get().fetchData()
+    } catch (e) { console.error('stop container failed', e) }
   },
 
   lockContainer: async (containerName) => {

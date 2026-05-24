@@ -96,7 +96,9 @@ def validate(tool_name: str, parameters: dict, packet: dict) -> SandboxResult:
             pass
 
     # Common check: container exists
-    if _client and container_name:
+    if container_name.startswith("mock-"):
+        container = "mock"
+    elif _client and container_name:
         try:
             container = _client.containers.get(container_name)
         except docker.errors.NotFound:
@@ -119,6 +121,12 @@ def validate(tool_name: str, parameters: dict, packet: dict) -> SandboxResult:
 
 
 def _sandbox_restart(container, container_name: str, packet: dict) -> SandboxResult:
+    if container == "mock":
+        effects = [
+            f"Mock container '{container_name}' will be restarted (simulated).",
+        ]
+        return _yes(effects=effects, assessment=f"restart of mock container '{container_name}' is low-risk")
+
     if container is None:
         return _no(f"Container '{container_name}' not found.")
 
@@ -153,6 +161,13 @@ def _sandbox_restart(container, container_name: str, packet: dict) -> SandboxRes
 
 
 def _sandbox_update_memory(container, parameters: dict, packet: dict) -> SandboxResult:
+    if container == "mock":
+        new_limit_mb = parameters.get("memory_mb", 0)
+        return _yes(
+            effects=[f"Memory limit for mock container '{parameters.get('container_name')}' will change to {new_limit_mb} MB (simulated)."],
+            assessment="Mock memory limit update simulation approved."
+        )
+
     if container is None:
         return _no("Container not found.")
 

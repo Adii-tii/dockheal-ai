@@ -29,20 +29,22 @@ class LifecycleState(str, enum.Enum):
     """
     State machine for an Investigation record.
 
-    Typical happy path:
-        INITIATED → ANALYZING → AWAITING_APPROVAL → REMEDIATING → RESOLVED
-
-    Other terminal states:
-        REJECTED, ESCALATED, BLOCKED
+    New states:
+        DETECTED, INVESTIGATING, RCA_IDENTIFIED, AWAITING_APPROVAL,
+        RECOVERING, VALIDATING, MONITORING, RESOLVED, REJECTED, TIMED_OUT, ESCALATED
     """
-    INITIATED         = "INITIATED"
-    ANALYZING         = "ANALYZING"
+    DETECTED          = "DETECTED"
+    INVESTIGATING     = "INVESTIGATING"
+    RCA_IDENTIFIED    = "RCA_IDENTIFIED"
     AWAITING_APPROVAL = "AWAITING_APPROVAL"
-    REMEDIATING       = "REMEDIATING"
+    RECOVERING        = "RECOVERING"
+    VALIDATING        = "VALIDATING"
+    MONITORING        = "MONITORING"
     RESOLVED          = "RESOLVED"
     REJECTED          = "REJECTED"
+    TIMED_OUT         = "TIMED_OUT"
     ESCALATED         = "ESCALATED"
-    BLOCKED           = "BLOCKED"
+    PAUSED            = "PAUSED"
 
 
 # ---------------------------------------------------------------------------

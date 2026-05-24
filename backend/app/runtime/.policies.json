@@ -1,0 +1,15 @@
+{
+  "cooldown_seconds": 300,
+  "max_retries": 3,
+  "packet_max_age_secs": 60,
+  "blocked_tools": [],
+  "severity_gate": 80,
+  "oom_severity": 85,
+  "crash_loop_severity": 75,
+  "repeated_restart_severity": 60,
+  "oom_block_restart": true,
+  "max_deep_iterations": 5,
+  "recovery_poll_interval_secs": 2.0,
+  "recovery_timeout_secs": 30,
+  "agent_mode": "Auto"
+}

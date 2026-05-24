@@ -97,7 +97,7 @@ def _get_container_state(container_name: str) -> dict:
         attrs = c.attrs
         state = attrs.get("State", {})
         return {
-            "id":            c.short_id,
+            "id":            c.id,
             "name":          c.name,
             "image":         c.image.tags[0] if c.image.tags else "unknown",
             "status":        c.status,

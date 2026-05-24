@@ -98,6 +98,11 @@ class InvestigationArtifact(Base, UUIDMixin):
             "metadata",
             postgresql_using="gin",
         ),
+        Index(
+            "ix_artifacts_inv_created",
+            "investigation_id",
+            "created_at",
+        ),
     )
 
     def __repr__(self) -> str:
