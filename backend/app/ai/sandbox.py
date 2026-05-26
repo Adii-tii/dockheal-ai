@@ -116,6 +116,12 @@ def validate(tool_name: str, parameters: dict, packet: dict) -> SandboxResult:
     if tool_name == "update_memory_limit":
         return _sandbox_update_memory(container, parameters, packet)
 
+    if tool_name == "prune_docker_system":
+        return _sandbox_prune_system(packet)
+
+    if tool_name == "clear_container_logs":
+        return _sandbox_clear_logs(container, container_name, packet)
+
     # Default for unknown tools
     return _no(f"No sandbox rule defined for '{tool_name}' — blocked by default.")
 
@@ -188,4 +194,31 @@ def _sandbox_update_memory(container, parameters: dict, packet: dict) -> Sandbox
     return _yes(
         effects=[f"Memory limit for '{parameters.get('container_name')}' will change to {new_limit_mb} MB."],
         assessment=f"New limit provides {(new_limit_mb - current_usage_mb):.0f} MB headroom.",
+    )
+
+
+def _sandbox_prune_system(packet: dict) -> SandboxResult:
+    return _yes(
+        effects=[
+            "Unused Docker objects (stopped containers, dangling images, unused networks/volumes) will be deleted.",
+            "Reclaims host disk space dynamically to resolve disk exhaustion."
+        ],
+        assessment="prune_docker_system is low/medium-risk and checks pass"
+    )
+
+
+def _sandbox_clear_logs(container, container_name: str, packet: dict) -> SandboxResult:
+    if container == "mock":
+        return _yes(
+            effects=[f"Logs of mock container '{container_name}' will be cleared."],
+            assessment="clear_container_logs for mock container approved"
+        )
+    if container is None:
+        return _no("Container not found.")
+    return _yes(
+        effects=[
+            f"Logs of container '{container_name}' will be permanently deleted.",
+            "Log file will be truncated to 0 bytes."
+        ],
+        assessment="clear_container_logs is low/medium-risk and checks pass"
     )

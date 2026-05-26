@@ -28,7 +28,7 @@ export default function Simulate() {
       glowColor: "shadow-[0_0_15px_rgba(234,67,53,0.08)]",
       metadata: [
         { label: "Exit Code", value: "137" },
-        { label: "Memory Limit", value: "1.0 GB" },
+        { label: "Memory Limit", value: "10 MB" },
         { label: "Severity", value: "P1 Critical" }
       ]
     },

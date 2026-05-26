@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { toast } from 'sonner'
 
 const API = 'http://localhost:8000'
 
@@ -238,6 +239,7 @@ export const useStore = create((set, get) => ({
     try {
       const res = await fetch(`${API}/investigations/${investigationId}/approve`, { method: 'POST' })
       if (!res.ok) throw new Error(await res.text())
+      await get().fetchData()
     } catch (e) {
       console.error('approveInvestigation failed', e)
     }
@@ -248,6 +250,7 @@ export const useStore = create((set, get) => ({
     try {
       const res = await fetch(`${API}/investigations/${investigationId}/reject`, { method: 'POST' })
       if (!res.ok) throw new Error(await res.text())
+      await get().fetchData()
     } catch (e) {
       console.error('rejectInvestigation failed', e)
     }
@@ -409,6 +412,10 @@ export const useStore = create((set, get) => ({
 
       case 'ALERT':
         pushActivity({ level: 'WARN', message: `[${data.severity?.toUpperCase()}] ${data.container}: ${data.message}` })
+        toast.warning(`[ALERT] ${data.container}: ${data.message}`, {
+          description: `Severity: ${data.severity}`,
+          duration: 10000,
+        })
         break
 
       default:

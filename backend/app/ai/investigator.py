@@ -32,7 +32,7 @@ from app.ai.prompt_builder import build_system_prompt, build_user_message
 from app.ai.output_parser import parse_output, build_correction_turn
 from app.ai.sandbox import validate as sandbox_validate
 from app.ai.guardrails import check as guardrails_check
-from app.ai.tools.registry import execute_tool
+from app.ai.tools.registry import execute_tool, async_execute_tool
 from app.ai.deep_investigator import deep_investigation_loop
 from app.runtime.state import (
     investigation_states,
@@ -61,6 +61,8 @@ _MODEL_STANDARD  = "mistral-medium-latest"
 _MODEL_ESCALATED = "mistral-large-latest"
 _TEMPERATURE     = 0.2
 _MAX_TOKENS      = 1024   # reasoning streams; final JSON is compact
+
+_mistral_semaphore = asyncio.Semaphore(1)
 
 # ── Lifecycle state transitions ────────────────────────────────────────────────
 LIFECYCLE_STATES = ["DETECTED", "INVESTIGATING", "RCA_IDENTIFIED", "AWAITING_APPROVAL", "RECOVERING", "MONITORING", "RESOLVED", "REJECTED", "TIMED_OUT", "ESCALATED"]
@@ -185,6 +187,7 @@ async def _finish_db_and_memory(
             "execution_results": execution_results,
             "preventive_recommendations": result.get("preventive_recommendations", []),
             "evidence_citations": result.get("evidence_citations", []),
+            "reason_for_restart": result.get("reason_for_restart", ""),
         },
         "detected_signals": packet.get("assessment", {}).get("likely_causes", []),
         # Persist the full reasoning stream
@@ -446,8 +449,9 @@ async def investigate(
             tool_name  = action.get("tool")
             parameters = action.get("parameters", {})
 
-            # Sandbox check
-            sandbox_result = sandbox_validate(tool_name, parameters, packet)
+            # Sandbox check — runs a Docker container.get() call internally;
+            # wrap in to_thread so it does not freeze the event loop.
+            sandbox_result = await asyncio.to_thread(sandbox_validate, tool_name, parameters, packet)
             if not sandbox_result.approved:
                 execution_results.append({
                     "tool":    tool_name,
@@ -475,12 +479,12 @@ async def investigate(
 
             # Guardrail check
             gd = guardrails_check(tool_name, parameters, packet, investigation_id)
-            requires_approval = (POLICIES.agent_mode == "Co-Pilot") or ai_result.get("requires_human") or gd.action == "escalate"
 
-            if not gd.allowed and not requires_approval:
+            # Immediate block handling — blocks cannot be bypassed or approved
+            if gd.action == "block":
                 execution_results.append({
                     "tool":    tool_name,
-                    "outcome": gd.action,
+                    "outcome": "blocked",
                     "reason":  gd.reason,
                 })
                 await broadcast({
@@ -491,7 +495,18 @@ async def investigate(
                     "layer":            "guardrail",
                     "decision":         gd.to_dict(),
                 })
+                await append_db_and_memory_timeline_event(
+                    investigation_id=inv_uuid,
+                    event_type="GUARDRAIL_BLOCKED",
+                    title="Execution Blocked by Guardrail",
+                    description=f"{tool_name} was hard-blocked by guardrails: {gd.reason}",
+                    source_type=SourceType.SYSTEM,
+                    severity=SeverityLevel.P2,
+                    correlation_id=correlation_id,
+                )
                 continue
+
+            requires_approval = (POLICIES.agent_mode == "Co-Pilot") or ai_result.get("requires_human") or gd.action == "escalate"
 
             if requires_approval:
                 extra_fields = {
@@ -503,6 +518,7 @@ async def investigate(
                         "execution_results": [],
                         "preventive_recommendations": ai_result.get("preventive_recommendations", []),
                         "evidence_citations": ai_result.get("evidence_citations", []),
+                        "reason_for_restart": ai_result.get("reason_for_restart", ""),
                     },
                 }
                 _set_state(investigation_id, "AWAITING_APPROVAL", {"final_result": ai_result, "result": ai_result})
@@ -527,66 +543,71 @@ async def investigate(
                 from app.runtime.state import approval_events, approval_results
                 approval_events[investigation_id] = asyncio.Event()
                 try:
-                    # 5-minute timeout deadline
-                    await asyncio.wait_for(approval_events[investigation_id].wait(), timeout=300)
-                    res = approval_results.get(investigation_id, {})
-                    if res.get("status") == "approved":
-                        await append_db_and_memory_timeline_event(
-                            investigation_id=inv_uuid,
-                            event_type="ACTION_APPROVED",
-                            title="Action Approved",
-                            description=f"Approved by {res.get('user', 'Operator')}.",
-                            source_type=SourceType.HUMAN,
-                            severity=SeverityLevel.P3,
-                            correlation_id=correlation_id,
-                        )
-                        _set_state(investigation_id, "RECOVERING")
-                        await _update_db_state(inv_uuid, LifecycleState.RECOVERING, correlation_id)
-                    else:
-                        await append_db_and_memory_timeline_event(
-                            investigation_id=inv_uuid,
-                            event_type="ACTION_REJECTED",
-                            title="Action Rejected",
-                            description=f"Rejected by {res.get('user', 'Operator')}.",
-                            source_type=SourceType.HUMAN,
-                            severity=SeverityLevel.P2,
-                            correlation_id=correlation_id,
-                        )
-                        execution_results.append({"tool": tool_name, "outcome": "rejected_by_operator"})
-                        _set_state(investigation_id, "REJECTED")
-                        await _update_db_state(inv_uuid, LifecycleState.REJECTED, correlation_id)
+                    try:
+                        # 5-minute timeout deadline
+                        await asyncio.wait_for(approval_events[investigation_id].wait(), timeout=300)
+                        res = approval_results.get(investigation_id, {})
+                        if res.get("status") == "approved":
+                            await append_db_and_memory_timeline_event(
+                                investigation_id=inv_uuid,
+                                event_type="ACTION_APPROVED",
+                                title="Action Approved",
+                                description=f"Approved by {res.get('user', 'Operator')}.",
+                                source_type=SourceType.HUMAN,
+                                severity=SeverityLevel.P3,
+                                correlation_id=correlation_id,
+                            )
+                            _set_state(investigation_id, "RECOVERING")
+                            await _update_db_state(inv_uuid, LifecycleState.RECOVERING, correlation_id)
+                        else:
+                            await append_db_and_memory_timeline_event(
+                                investigation_id=inv_uuid,
+                                event_type="ACTION_REJECTED",
+                                title="Action Rejected",
+                                description=f"Rejected by {res.get('user', 'Operator')}.",
+                                source_type=SourceType.HUMAN,
+                                severity=SeverityLevel.P2,
+                                correlation_id=correlation_id,
+                            )
+                            execution_results.append({"tool": tool_name, "outcome": "rejected_by_operator"})
+                            _set_state(investigation_id, "REJECTED")
+                            await _update_db_state(inv_uuid, LifecycleState.REJECTED, correlation_id)
+                            break
+                    except asyncio.TimeoutError:
+                        is_high_severity = severity_str in ("P0", "P1")
+                        timeout_state = LifecycleState.ESCALATED if is_high_severity else LifecycleState.TIMED_OUT
+                        
+                        _set_state(investigation_id, timeout_state.value)
+                        await _update_db_state(inv_uuid, timeout_state, correlation_id)
+                        
+                        if timeout_state == LifecycleState.ESCALATED:
+                            await append_db_and_memory_timeline_event(
+                                investigation_id=inv_uuid,
+                                event_type="APPROVAL_TIMEOUT",
+                                title="Approval Timeout - Escalated",
+                                description="No response in 5 minutes. Action auto-rejected and escalated.",
+                                source_type=SourceType.SYSTEM,
+                                severity=SeverityLevel.P1,
+                                correlation_id=correlation_id,
+                            )
+                            execution_results.append({"tool": tool_name, "outcome": "timeout_escalated"})
+                        else:
+                            await append_db_and_memory_timeline_event(
+                                investigation_id=inv_uuid,
+                                event_type="APPROVAL_TIMEOUT",
+                                title="Approval Timeout - Timed Out",
+                                description="No response in 5 minutes. Action timed out.",
+                                source_type=SourceType.SYSTEM,
+                                severity=SeverityLevel.P2,
+                                correlation_id=correlation_id,
+                            )
+                            execution_results.append({"tool": tool_name, "outcome": "timeout_rejected"})
+                        
                         break
-                except asyncio.TimeoutError:
-                    is_high_severity = severity_str in ("P0", "P1")
-                    timeout_state = LifecycleState.ESCALATED if is_high_severity else LifecycleState.TIMED_OUT
-                    
-                    _set_state(investigation_id, timeout_state.value)
-                    await _update_db_state(inv_uuid, timeout_state, correlation_id)
-                    
-                    if timeout_state == LifecycleState.ESCALATED:
-                        await append_db_and_memory_timeline_event(
-                            investigation_id=inv_uuid,
-                            event_type="APPROVAL_TIMEOUT",
-                            title="Approval Timeout - Escalated",
-                            description="No response in 5 minutes. Action auto-rejected and escalated.",
-                            source_type=SourceType.SYSTEM,
-                            severity=SeverityLevel.P1,
-                            correlation_id=correlation_id,
-                        )
-                        execution_results.append({"tool": tool_name, "outcome": "timeout_escalated"})
-                    else:
-                        await append_db_and_memory_timeline_event(
-                            investigation_id=inv_uuid,
-                            event_type="APPROVAL_TIMEOUT",
-                            title="Approval Timeout - Timed Out",
-                            description="No response in 5 minutes. Action timed out.",
-                            source_type=SourceType.SYSTEM,
-                            severity=SeverityLevel.P2,
-                            correlation_id=correlation_id,
-                        )
-                        execution_results.append({"tool": tool_name, "outcome": "timeout_rejected"})
-                    
-                    break
+                finally:
+                    logger.info(f"[APPROVAL] Purged memory structures for investigation {investigation_id} to prevent leaks.")
+                    approval_events.pop(investigation_id, None)
+                    approval_results.pop(investigation_id, None)
 
             await append_db_and_memory_timeline_event(
                 investigation_id=inv_uuid,
@@ -627,7 +648,9 @@ async def investigate(
             except Exception as db_err:
                 logger.error(f"Failed to insert RecoveryAction start record to DB: {db_err}")
 
-            tool_result = execute_tool(
+            # Execute tool — all Docker SDK calls inside are blocking.
+            # async_execute_tool offloads the entire call to a thread pool.
+            tool_result = await async_execute_tool(
                 tool_name        = tool_name,
                 parameters       = parameters,
                 investigation_id = investigation_id,
@@ -702,6 +725,8 @@ async def investigate(
                 any_executed = True
 
         # ── Lifecycle: RESOLVED or ESCALATED ──────────────────────────────────────
+        is_resolved = False
+        post_health = "no_action_executed"
         if any_executed:
             _set_state(investigation_id, "MONITORING")
             await _update_db_state(inv_uuid, LifecycleState.MONITORING, correlation_id)
@@ -715,25 +740,37 @@ async def investigate(
                 severity=SeverityLevel.P3,
                 correlation_id=correlation_id,
             )
-            await asyncio.sleep(2)  # Simulate brief monitoring phase
+            # Run the robust polling health verification from recovery.py in a thread
+            from app.services.recovery import poll_health
+            post_health, verified = await asyncio.to_thread(poll_health, container_name)
+            is_resolved = verified
+        else:
+            verified = False
 
-        final_state = "RESOLVED" if any_executed else "ESCALATED"
+        final_state = "RESOLVED" if is_resolved else "ESCALATED"
         if final_state == "RESOLVED":
             await append_db_and_memory_timeline_event(
                 investigation_id=inv_uuid,
                 event_type="INCIDENT_RESOLVED",
                 title="Incident Resolved",
-                description=f"Container {container_name} is operating normally.",
+                description=f"Container {container_name} is operating normally. Health verification passed (status: {post_health}).",
                 source_type=SourceType.SYSTEM,
                 severity=SeverityLevel.P3,
                 correlation_id=correlation_id,
             )
         else:
+            desc = f"Unable to fully remediate container {container_name}. "
+            if any_executed:
+                desc += f"Health verification failed (status: {post_health})."
+            else:
+                desc += "No actions were successfully executed."
+            desc += " Escalating to human operators."
+            
             await append_db_and_memory_timeline_event(
                 investigation_id=inv_uuid,
                 event_type="INCIDENT_ESCALATED",
                 title="Incident Escalated",
-                description="Unable to fully remediate. Escalating to human operators.",
+                description=desc,
                 source_type=SourceType.SYSTEM,
                 severity=SeverityLevel.P2,
                 correlation_id=correlation_id,
@@ -848,48 +885,64 @@ async def _stream_mistral(
     Returns the full concatenated response text.
     Reasoning chunks are sent to frontend and then discarded — not stored.
     """
-    client    = Mistral(api_key=_API_KEY)
-    full_text = ""
-    sequence  = sequence_offset
-
-    try:
-        # mistralai v2.x async streaming
-        result = await client.chat.stream_async(
-            model    = model,
-            messages = messages,
-            temperature = _TEMPERATURE,
-            max_tokens  = _MAX_TOKENS,
-        )
-        async for event in result:
-            delta = ""
+    async with _mistral_semaphore:
+        max_retries = 3
+        for attempt in range(max_retries):
+            client    = Mistral(api_key=_API_KEY)
+            full_text = ""
+            sequence  = sequence_offset
             try:
-                delta = event.data.choices[0].delta.content or ""
-            except Exception:
-                pass
+                # mistralai v2.x async streaming
+                result = await client.chat.stream_async(
+                    model    = model,
+                    messages = messages,
+                    temperature = _TEMPERATURE,
+                    max_tokens  = _MAX_TOKENS,
+                )
+                async for event in result:
+                    delta = ""
+                    try:
+                        delta = event.data.choices[0].delta.content or ""
+                    except Exception:
+                        pass
 
-            if delta:
-                full_text += delta
-                sequence  += 1
-                # Accumulate in-memory (for persistence at end of investigation)
-                entry = investigation_states.get(investigation_id, {})
-                entry["thoughts"] = (entry.get("thoughts") or "") + delta
-                investigation_states[investigation_id] = entry
-                # Broadcast chunk
-                await broadcast({
-                    "type":             "AI_THOUGHT",
-                    "investigation_id": investigation_id,
-                    "container":        container_name,
-                    "chunk":            delta,
-                    "sequence":         sequence,
-                })
-
-    except Exception as e:
-        await broadcast({
-            "type":             "AI_THOUGHT",
-            "investigation_id": investigation_id,
-            "container":        container_name,
-            "chunk":            f"[Stream error: {e}]",
-            "sequence":         sequence + 1,
-        })
-
-    return full_text
+                    if delta:
+                        full_text += delta
+                        sequence  += 1
+                        # Accumulate in-memory (for persistence at end of investigation)
+                        entry = investigation_states.get(investigation_id, {})
+                        entry["thoughts"] = (entry.get("thoughts") or "") + delta
+                        investigation_states[investigation_id] = entry
+                        # Broadcast chunk
+                        await broadcast({
+                            "type":             "AI_THOUGHT",
+                            "investigation_id": investigation_id,
+                            "container":        container_name,
+                            "chunk":            delta,
+                            "sequence":         sequence,
+                        })
+                # If streaming succeeded, return the text
+                return full_text
+            except Exception as e:
+                logger.error(f"[AI] Mistral stream attempt {attempt + 1}/{max_retries} failed for {container_name}: {e}")
+                if attempt < max_retries - 1:
+                    wait_time = 2 * (attempt + 1)
+                    await broadcast({
+                        "type":             "AI_THOUGHT",
+                        "investigation_id": investigation_id,
+                        "container":        container_name,
+                        "chunk":            f"\n[Rate limit/API error, retrying in {wait_time}s...]\n",
+                        "sequence":         sequence + 1,
+                    })
+                    await asyncio.sleep(wait_time)
+                else:
+                    # Final attempt failed
+                    await broadcast({
+                        "type":             "AI_THOUGHT",
+                        "investigation_id": investigation_id,
+                        "container":        container_name,
+                        "chunk":            f"[Stream error: {e}]",
+                        "sequence":         sequence + 1,
+                    })
+                    logger.error(f"[AI] Mistral stream failed permanently for {container_name}: {e}", exc_info=True)
+                    return ""

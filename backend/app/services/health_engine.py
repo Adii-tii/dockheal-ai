@@ -9,11 +9,21 @@ IGNORE_IMAGES = [
 ]
 
 
-def detect_incidents():
+def detect_incidents(containers: list | None = None, metrics: list | None = None):
+    """
+    Detect incidents from the current container state.
 
+    Args:
+        containers: Optional pre-fetched container list from async_get_all_containers().
+                    When provided the Docker SDK is NOT called again, eliminating a
+                    duplicate blocking call in the monitor loop.
+                    When None (e.g. called directly from /incidents), falls back to
+                    get_all_containers() — callers should wrap with asyncio.to_thread.
+    """
     incidents = []
 
-    containers = get_all_containers()
+    if containers is None:
+        containers = get_all_containers()
 
     for container in containers:
 
@@ -65,4 +75,17 @@ def detect_incidents():
                 "message": f"{name} failed healthcheck"
             })
 
-    return incidents
+        # CPU spike detection
+        if metrics:
+            metric_entry = next((m for m in metrics if m["name"] == name), None)
+            if metric_entry and metric_entry.get("cpu_percent", 0.0) >= 85.0:
+                print(f"[DETECTED] CPU spike -> {name}")
+                active_incidents.add(name)
+                incidents.append({
+                    "type": "CpuSpike",
+                    "severity": "P2",
+                    "container": name,
+                    "message": f"{name} CPU utilization spiked to {metric_entry['cpu_percent']}%"
+                })
+
+    return incidents

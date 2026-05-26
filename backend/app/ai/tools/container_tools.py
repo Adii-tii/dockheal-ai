@@ -6,8 +6,14 @@ Constraints enforced here:
   - Only explicit named Docker SDK calls.
   - Each function returns a ToolResult via the @mcp_tool decorator.
   - Tools never access Docker API directly — always via the shared client.
+
+All functions here are synchronous (required by the @mcp_tool decorator and
+execute_tool registry). The blocking Docker calls inside each function are
+safe to use from background threads. When calling from an async context use
+`asyncio.to_thread(tool_fn, ...)` via `async_execute_tool` in registry.py.
 """
 
+import asyncio
 import docker
 from app.ai.tools.decorator import mcp_tool, ToolResult
 
@@ -146,6 +152,79 @@ def inspect_container_tool(container_name: str) -> ToolResult:
         return ToolResult(success=False, output=f"Container '{container_name}' not found")
     except Exception as e:
         return ToolResult(success=False, output=str(e))
+
+
+@mcp_tool(
+    name="prune_docker_system",
+    description="Prune unused Docker resources (stopped containers, dangling images, unused networks, and volumes) to reclaim disk space (resolves ENOSPC/disk full errors).",
+    allowed_params=[],
+    risk_level="medium",
+    phase=1,
+)
+def prune_docker_system_tool() -> ToolResult:
+    if not _client:
+        return ToolResult(success=False, output="Docker client unavailable")
+    try:
+        reclaimed_bytes = 0
+        
+        # Prune containers
+        res_c = _client.containers.prune()
+        reclaimed_bytes += res_c.get("SpaceReclaimed", 0) or 0
+        
+        # Prune volumes
+        res_v = _client.volumes.prune()
+        reclaimed_bytes += res_v.get("SpaceReclaimed", 0) or 0
+        
+        # Prune images
+        res_i = _client.images.prune()
+        reclaimed_bytes += res_i.get("SpaceReclaimed", 0) or 0
+        
+        reclaimed_mb = reclaimed_bytes / (1024 * 1024)
+        output = f"Successfully pruned unused Docker system resources. Reclaimed {reclaimed_mb:.2f} MB of disk space."
+        return ToolResult(
+            success=True,
+            output=output,
+            side_effects=["Pruned stopped containers, dangling images, and unused volumes."],
+        )
+    except Exception as e:
+        return ToolResult(success=False, output=f"Failed to prune Docker system: {e}")
+
+
+@mcp_tool(
+    name="clear_container_logs",
+    description="Clear (truncate) the log file of a container to free up disk space.",
+    allowed_params=["container_name"],
+    risk_level="medium",
+    phase=1,
+)
+def clear_container_logs_tool(container_name: str) -> ToolResult:
+    if container_name.startswith("mock-") or container_name.startswith("dockheal-sim-"):
+        return ToolResult(
+            success=True,
+            output=f"Successfully truncated logs for container '{container_name}' (simulated).",
+            side_effects=[f"Cleared logs of container '{container_name}'"],
+        )
+    if not _client:
+        return ToolResult(success=False, output="Docker client unavailable")
+    try:
+        container = _client.containers.get(container_name)
+        log_path = container.attrs.get("LogPath")
+        if not log_path:
+            return ToolResult(success=False, output=f"Could not locate log path for '{container_name}'")
+        
+        import os
+        if os.path.exists(log_path):
+            with open(log_path, "r+") as f:
+                f.truncate(0)
+            return ToolResult(
+                success=True,
+                output=f"Successfully truncated container log file: {log_path}",
+                side_effects=[f"Cleared logs of container '{container_name}'"],
+            )
+        else:
+            return ToolResult(success=False, output=f"Log file {log_path} does not exist or is inaccessible.")
+    except Exception as e:
+        return ToolResult(success=False, output=f"Failed to clear container logs: {e}")
 
 
 # ── Phase 2 stubs (registered but hard-blocked by guardrails) ─────────────────

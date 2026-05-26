@@ -16,6 +16,9 @@ from app.runtime.state import (
     remediation_retry_counts,
 )
 
+# Explicit whitelist of read-only diagnostic tools that bypass operational constraints
+SAFE_DIAGNOSTIC_TOOLS = {"fetch_logs", "inspect_container", "send_alert"}
+
 
 # ── Decision schema ────────────────────────────────────────────────────────────
 class GuardrailDecision:
@@ -77,9 +80,32 @@ def check(
 
     # ── HARD RULES — checked in priority order ─────────────────────────────────
 
-    # 1. Phase 2 tool hard-block
     from app.ai.tools.decorator import TOOL_METADATA
     meta = TOOL_METADATA.get(tool_name, {})
+
+    # Explicit safe diagnostic tools bypass all hard blocks and severity/remediation gates
+    if tool_name in SAFE_DIAGNOSTIC_TOOLS:
+        from app.context.aggregator import CPU_HIGH, MEM_HIGH
+        score = assessment.get("severity_score", 0)
+        if score >= 60:
+            soft_warnings.append(f"High severity_score ({score}) — monitor closely after execution.")
+
+        if not packet.get("ai_result", {}).get("evidence_citations"):
+            soft_warnings.append("AI action not grounded in telemetry citations.")
+
+        confidence = packet.get("ai_result", {}).get("confidence", 1.0)
+        if confidence < 0.75:
+            soft_warnings.append(f"AI confidence {confidence:.0%} — below 75% threshold.")
+
+        unhealthy_peers = deps.get("unhealthy_peers", [])
+        if len(unhealthy_peers) >= 1:
+            soft_warnings.append(
+                f"Peer containers also degraded: {', '.join(unhealthy_peers)}. "
+                f"Restarting this container may not resolve the incident."
+            )
+        return _execute(soft_warnings)
+
+    # 1. Phase 2 tool hard-block
     if meta.get("phase", 1) == 2:
         return _block(f"'{tool_name}' is a Phase 2 tool and cannot be executed autonomously yet.")
 

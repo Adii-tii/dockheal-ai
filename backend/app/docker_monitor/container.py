@@ -53,3 +53,15 @@ def get_all_containers():
         })
 
     return result
+
+
+# ── Async wrapper ──────────────────────────────────────────────────────────────
+# The Docker SDK uses blocking urllib3 I/O internally. Calling it directly from
+# an async function freezes the entire event loop for the duration of the call.
+# Use this wrapper in all async callers (route handlers, monitor loop, etc.).
+
+import asyncio as _asyncio
+
+async def async_get_all_containers() -> list[dict]:
+    """Non-blocking wrapper — runs get_all_containers() in the default thread pool."""
+    return await _asyncio.to_thread(get_all_containers)

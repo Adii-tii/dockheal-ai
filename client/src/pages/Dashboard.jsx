@@ -180,6 +180,55 @@ export default function Dashboard() {
     c.name.toLowerCase().includes(searchQuery.toLowerCase())
   )
 
+  // Extract restarts with AI generated reason
+  const restartsFeed = []
+  Object.values(investigations).forEach(inv => {
+    if (searchQuery && !inv.container?.toLowerCase().includes(searchQuery.toLowerCase())) {
+      return
+    }
+    const restartEvents = inv.timeline?.filter(e => e.type === 'CONTAINER_RESTART') || []
+    if (restartEvents.length > 0) {
+      restartEvents.forEach(evt => {
+        let reason = inv.result?.reason_for_restart || inv.result?.rca_report?.ai_reasoning_summary || inv.result?.root_cause
+        if (!reason && evt.description) {
+          const match = evt.description.match(/Reason:\s*(.*)/i)
+          if (match) {
+            reason = match[1]
+          }
+        }
+        if (!reason) {
+          reason = evt.description || "Container restarted to resolve incident."
+        }
+        restartsFeed.push({
+          id: `${inv.investigation_id}-${evt.timestamp}`,
+          container: inv.container,
+          timestamp: evt.timestamp,
+          reason: reason,
+          investigationId: inv.investigation_id,
+          lifecycle: inv.lifecycle,
+          type: "AI Autonomous Recovery"
+        })
+      })
+    } else if (inv.result?.reason_for_restart || inv.result?.rca_report?.ai_reasoning_summary) {
+      restartsFeed.push({
+        id: inv.investigation_id,
+        container: inv.container,
+        timestamp: inv.startedAt,
+        reason: inv.result?.reason_for_restart || inv.result?.rca_report?.ai_reasoning_summary || inv.result?.root_cause || "Container restarted to resolve incident.",
+        investigationId: inv.investigation_id,
+        lifecycle: inv.lifecycle,
+        type: "AI Autonomous Recovery"
+      })
+    }
+  })
+
+  restartsFeed.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+
+  const totalSystemRestarts = containers.reduce((sum, c) => {
+    const m = metrics[c.name] || {}
+    return sum + (m.restart_count || 0)
+  }, 0)
+
   const runningCount = containers.filter(c => c.status === "running").length
   const activeIncidentsCount = incidents.length // Could filter by unresolved if tracking
   const activeInvestigationsCount = Object.values(investigations).filter(inv => !["RESOLVED", "ESCALATED", "BLOCKED"].includes(inv.lifecycle)).length
@@ -262,10 +311,10 @@ export default function Dashboard() {
               Incident Timeline
             </div>
             <div
-              className={`text-[13px] font-medium pb-2 cursor-pointer ${activeTab === 'Full Logs' ? 'text-[#8ab4f8] border-b-2 border-[#8ab4f8]' : 'text-muted-foreground hover:text-foreground'}`}
-              onClick={() => setActiveTab('Full Logs')}
+              className={`text-[13px] font-medium pb-2 cursor-pointer ${activeTab === 'Restarts' ? 'text-[#8ab4f8] border-b-2 border-[#8ab4f8]' : 'text-muted-foreground hover:text-foreground'}`}
+              onClick={() => setActiveTab('Restarts')}
             >
-              Full Logs
+              Restarts
             </div>
           </div>
 
@@ -378,6 +427,7 @@ export default function Dashboard() {
                           const targets = [...selectedContainers];
                           setSelectedContainers([]);
                           await Promise.all(targets.map(name => triggerInvestigation(name)));
+                          navigate('/investigations');
                         }}
                         disabled={selectedContainers.length === 0}
                         variant="outline"
@@ -543,7 +593,10 @@ export default function Dashboard() {
                               <TableCell className="py-2">
                                 <div className="flex items-center gap-3">
                                   <div className="min-w-0">
-                                    <div className="text-[13px] font-normal text-[#8ab4f8] hover:underline cursor-pointer flex items-center gap-2 truncate">
+                                    <div 
+                                      onClick={() => handleShowInvestigation(container.name)}
+                                      className="text-[13px] font-normal text-[#8ab4f8] hover:underline cursor-pointer flex items-center gap-2 truncate"
+                                    >
                                       {container.name}
                                       {container.health === "unhealthy" && (
                                         <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wider border bg-[#b71c1c]/15 text-[#f28b82] border-[#f28b82]/20 shrink-0 ml-2">
@@ -733,32 +786,113 @@ export default function Dashboard() {
               </div>
             </div>
           ) : (
-            <div className="border border-[#3c4043] rounded-[10px] bg-[#000000] flex flex-col h-[600px] mb-8 overflow-hidden">
-              <div className="px-5 py-3 border-b border-[#3c4043] flex justify-between items-center shrink-0">
-                <h2 className="text-[13px] font-medium text-[#e8eaed]">System Logs & Events</h2>
+            <div className="flex flex-col gap-6 mb-8">
+              {/* Summary Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                <div className="border border-[#3c4043] rounded-[10px] bg-[#151618]/60 backdrop-blur-md p-6 flex flex-col justify-between h-[130px] relative overflow-hidden transition-all duration-300 hover:border-[#8ab4f8]/50 shadow-xl group">
+                  <div className="absolute top-0 right-0 w-[120px] h-[120px] bg-gradient-to-br from-[#8ab4f8]/5 to-transparent rounded-full -mr-10 -mt-10 blur-xl pointer-events-none group-hover:from-[#8ab4f8]/10 transition-all duration-300" />
+                  <div>
+                    <span className="text-[11px] font-semibold text-[#8ab4f8] uppercase tracking-wider">AI Autonomous Recoveries</span>
+                    <h2 className="text-3xl font-normal text-[#e8eaed] mt-1 font-mono tracking-tight">{restartsFeed.length}</h2>
+                  </div>
+                  <p className="text-[12px] text-[#9aa0a6] mt-2 font-light">Restarts triggered and verified by AI Agent.</p>
+                </div>
+                <div className="border border-[#3c4043] rounded-[10px] bg-[#151618]/60 backdrop-blur-md p-6 flex flex-col justify-between h-[130px] relative overflow-hidden transition-all duration-300 hover:border-[#f28b82]/50 shadow-xl group">
+                  <div className="absolute top-0 right-0 w-[120px] h-[120px] bg-gradient-to-br from-[#f28b82]/5 to-transparent rounded-full -mr-10 -mt-10 blur-xl pointer-events-none group-hover:from-[#f28b82]/10 transition-all duration-300" />
+                  <div>
+                    <span className="text-[11px] font-semibold text-[#f28b82] uppercase tracking-wider">Total System Restarts</span>
+                    <h2 className="text-3xl font-normal text-[#e8eaed] mt-1 font-mono tracking-tight">{totalSystemRestarts}</h2>
+                  </div>
+                  <p className="text-[12px] text-[#9aa0a6] mt-2 font-light">Aggregated restarts recorded by Docker engine.</p>
+                </div>
               </div>
-              <ScrollArea className="flex-1 min-h-0 bg-[#000000] p-4">
-                <div className="font-mono text-[12px] space-y-1">
-                  {activityFeed.map((entry) => (
-                    <div key={entry.id} className="flex items-start gap-4 hover:bg-[#151618] p-1.5 rounded transition-colors">
-                      <span className="text-[#9aa0a6] whitespace-nowrap">
-                        {new Date(entry.ts).toLocaleString()}
-                      </span>
-                      <span className={`uppercase font-bold tracking-wider w-24 shrink-0 ${entry.level === 'AI' ? 'text-[#8ab4f8]' :
-                        entry.level === 'WARN' ? 'text-amber-500' :
-                          entry.level === 'SAFEGUARD' ? 'text-emerald-500' :
-                            'text-[#9aa0a6]'
-                        }`}>
-                        [{entry.level}]
-                      </span>
-                      <span className="text-[#e8eaed] break-all">{entry.message}</span>
-                    </div>
-                  ))}
-                  {activityFeed.length === 0 && (
-                    <div className="text-[#9aa0a6] italic p-4 text-center">No logs available.</div>
+
+              {/* Feed Card */}
+              <div className="border border-[#3c4043] rounded-[10px] bg-[#000000] flex flex-col h-[550px] overflow-hidden">
+                <div className="px-5 py-4 border-b border-[#3c4043] flex justify-between items-center shrink-0">
+                  <div>
+                    <h2 className="text-[14px] font-medium text-[#e8eaed]">Restarts & Diagnostics Log</h2>
+                    <p className="text-[11px] text-[#9aa0a6] mt-0.5">Chronological feed of AI healing actions and corresponding root cause reasoning.</p>
+                  </div>
+                  {searchQuery && (
+                    <span className="text-[11px] text-[#8ab4f8] bg-[#8ab4f8]/10 border border-[#8ab4f8]/20 px-2 py-0.5 rounded-full">
+                      Filtering: "{searchQuery}" ({restartsFeed.length} matches)
+                    </span>
                   )}
                 </div>
-              </ScrollArea>
+                <ScrollArea className="flex-1 min-h-0 bg-[#000000] p-5">
+                  <div className="space-y-4">
+                    {restartsFeed.map((item) => (
+                      <div key={item.id} className="border border-[#3c4043] bg-[#121212]/50 hover:bg-[#151618]/50 p-4 rounded-lg transition-all duration-200 shadow-md flex flex-col gap-3 relative overflow-hidden group">
+                        
+                        <div className="flex items-center justify-between gap-4 flex-wrap">
+                          <div className="flex items-center gap-2.5">
+                            <div className="h-7 w-7 rounded-full bg-[#8ab4f8]/10 border border-[#8ab4f8]/20 flex items-center justify-center shrink-0">
+                              <RefreshCw className="h-3.5 w-3.5 text-[#8ab4f8] transition-transform duration-500 group-hover:rotate-180" />
+                            </div>
+                            <div>
+                              <span className="text-[14px] font-medium text-[#e8eaed] font-mono">{item.container}</span>
+                              <span className="ml-2 text-[10px] text-[#9aa0a6] border border-[#3c4043] px-1.5 py-0.5 rounded-full uppercase tracking-wider font-semibold">
+                                {item.type}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="text-[11px] text-[#9aa0a6] font-mono">
+                              {new Date(item.timestamp).toLocaleString()}
+                            </span>
+                            {renderCompactStatusPill(item.lifecycle)}
+                          </div>
+                        </div>
+
+                        <div className="pl-9 pr-2">
+                          <div className="bg-gradient-to-r from-[#8ab4f8]/5 via-transparent to-transparent border-l-2 border-[#8ab4f8] p-3 rounded-r-md">
+                            <div className="flex items-start gap-2">
+                              <BrainCircuit className="h-4 w-4 text-[#8ab4f8] shrink-0 mt-0.5" />
+                              <div className="text-[12.5px] text-[#e8eaed] leading-relaxed">
+                                <span className="text-[#8ab4f8] font-semibold">AI Generated Reason: </span>
+                                {item.reason}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex justify-end gap-2 pr-2 shrink-0">
+                          <Button
+                            variant="ghost"
+                            onClick={() => {
+                              useStore.setState({ activeInvId: item.investigationId });
+                              navigate('/investigations');
+                            }}
+                            className="h-7 px-3 text-[11px] font-medium text-[#8ab4f8] hover:text-[#e8eaed] hover:bg-[#8ab4f8]/10 border border-[#8ab4f8]/20 rounded flex items-center gap-1 transition-all"
+                          >
+                            View AI Report ↗
+                          </Button>
+                        </div>
+
+                      </div>
+                    ))}
+
+                    {restartsFeed.length === 0 && (
+                      <div className="flex flex-col items-center justify-center p-12 border border-dashed border-[#3c4043] rounded-lg text-center bg-[#151618]/20 mt-4">
+                        <div className="h-10 w-10 rounded-full bg-[#3c4043]/30 flex items-center justify-center mb-3">
+                          <RefreshCw className="h-5 w-5 text-[#9aa0a6]" />
+                        </div>
+                        <h3 className="text-[14px] font-medium text-[#e8eaed]">No Restarts Registered</h3>
+                        <p className="text-[12px] text-[#9aa0a6] max-w-sm mt-1 mb-4">
+                          There are no container restarts logged under this view matching your criteria.
+                        </p>
+                        <Button
+                          onClick={() => navigate('/simulate')}
+                          className="h-8 px-4 text-[12px] font-medium text-[#8ab4f8] border border-[#8ab4f8]/30 hover:border-[#8ab4f8] rounded bg-transparent hover:bg-[#8ab4f8]/10"
+                        >
+                          Trigger Simulated Crash
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </ScrollArea>
+              </div>
             </div>
           )}
         </div>

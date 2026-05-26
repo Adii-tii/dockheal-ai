@@ -62,12 +62,9 @@ def log_to_dead_letter(payload: Dict[str, Any], error_msg: str, category: str = 
 
 async def dispatch_notification(notification: Notification) -> bool:
     """
-    Simulates sending the notification to external systems.
+    Sends the notification to external systems.
     Returns True if successful, False otherwise.
     """
-    # Simulate API latency
-    await asyncio.sleep(0.5)
-    
     recipient = notification.recipient
     meta = notification.metadata_ or {}
     message = meta.get("message", "")

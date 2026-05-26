@@ -89,23 +89,23 @@ _JSON_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 _BARE_JSON   = re.compile(r"(\{.*\})", re.DOTALL)
 
 
-def _extract_json(text: str) -> dict | None:
-    """Pull the first JSON object from raw text. Returns None if not found."""
+def _extract_json(text: str) -> tuple[dict | None, str | None]:
+    """Pull the first JSON object from raw text. Returns (parsed_dict, error_msg)."""
     # Try fenced block first
     m = _JSON_FENCE.search(text)
     if m:
         try:
-            return json.loads(m.group(1))
-        except json.JSONDecodeError:
-            pass
+            return json.loads(m.group(1)), None
+        except json.JSONDecodeError as de:
+            return None, f"JSONDecodeError in fenced block: {de}"
     # Try bare JSON
     m = _BARE_JSON.search(text)
     if m:
         try:
-            return json.loads(m.group(1))
-        except json.JSONDecodeError:
-            pass
-    return None
+            return json.loads(m.group(1)), None
+        except json.JSONDecodeError as de:
+            return None, f"JSONDecodeError in bare JSON: {de}"
+    return None, "no JSON block found in response"
 
 
 # ── Confidence enforcement ─────────────────────────────────────────────────────
@@ -159,10 +159,10 @@ def parse_output(
     Note: retry logic (building a corrective user turn and calling Mistral again)
     is handled in investigator.py. This function only parses — it does not call Mistral.
     """
-    raw_json = _extract_json(raw_text)
+    raw_json, err_msg = _extract_json(raw_text)
 
     if raw_json is None:
-        return _fallback(investigation_id, container, "no JSON block found in response")
+        return _fallback(investigation_id, container, err_msg or "no JSON block found in response")
 
     # Inject identifiers if AI omitted them (common)
     raw_json.setdefault("investigation_id", investigation_id)

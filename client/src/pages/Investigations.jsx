@@ -142,8 +142,9 @@ export default function Investigations() {
   const [selectedLogText, setSelectedLogText] = useState("")
   const [selectionCoords, setSelectionCoords] = useState(null)
 
-  // Investigations list filters
   const [containerSearch, setContainerSearch] = useState("")
+  const [historyPage, setHistoryPage] = useState(1)
+  const HISTORY_PAGE_SIZE = 20
 
   // Call Logs filters
   const [logSearch, setLogSearch] = useState("")
@@ -219,13 +220,38 @@ export default function Investigations() {
     return () => document.removeEventListener("selectionchange", handleGlobalSelectionChange)
   }, [])
 
-  const activeRecords = Object.values(investigations).filter(inv => !["RESOLVED", "REJECTED"].includes(inv.lifecycle))
-  const historyRecords = Object.values(investigations).filter(inv => ["RESOLVED", "REJECTED"].includes(inv.lifecycle))
+  // ── Sort ALL investigations by startedAt desc ─────────────────────────────
+  const allInvestigations = Object.values(investigations).sort((a, b) => {
+    const da = new Date(a.startedAt || 0)
+    const db = new Date(b.startedAt || 0)
+    return db - da   // newest first
+  })
 
-  const tableRecords = activeTab === "Incident History" ? historyRecords : activeRecords
+  // Investigation tab: top 10 latest, any status, no pagination
+  const investigationTabRecords = allInvestigations.slice(0, 10)
 
-  const filteredTableRecords = tableRecords.filter(inv =>
+  // Incident History tab: all, with pagination
+  const historyFiltered = allInvestigations.filter(inv =>
     !containerSearch || inv.container?.toLowerCase().includes(containerSearch.toLowerCase())
+  )
+  const historyTotalPages = Math.max(1, Math.ceil(historyFiltered.length / HISTORY_PAGE_SIZE))
+  const historyPageSafe = Math.min(historyPage, historyTotalPages)
+  const historyPageRecords = historyFiltered.slice(
+    (historyPageSafe - 1) * HISTORY_PAGE_SIZE,
+    historyPageSafe * HISTORY_PAGE_SIZE
+  )
+
+  const tableRecords = activeTab === "Incident History" ? historyPageRecords : investigationTabRecords
+
+  const filteredTableRecords = activeTab === "Incident History"
+    ? tableRecords   // already filtered above
+    : investigationTabRecords.filter(inv =>
+        !containerSearch || inv.container?.toLowerCase().includes(containerSearch.toLowerCase())
+      )
+
+  // Keep existing activeRecords so Stop All button logic still works
+  const activeRecords = Object.values(investigations).filter(inv =>
+    !["RESOLVED", "REJECTED", "TIMED_OUT", "ESCALATED"].includes((inv.lifecycle || "").toUpperCase())
   )
 
   // Pull structured timeline events from backend state
@@ -292,6 +318,7 @@ export default function Investigations() {
                     setActiveTab(tab)
                     useStoreSetActiveInvId(null)
                     if (tab === 'Call Logs') fetchCallLogs()
+                    if (tab === 'Incident History') setHistoryPage(1)
                   }}
                 >
                   {tab}
@@ -904,7 +931,11 @@ export default function Investigations() {
               // ==========================================
               <div className="flex-1 flex flex-col min-h-0 overflow-hidden px-2">
                 <div className="flex items-center justify-between mb-4">
-                   <h3 className="text-[16px] font-medium text-[#e8eaed]">{activeTab} ({filteredTableRecords.length})</h3>
+                   <h3 className="text-[16px] font-medium text-[#e8eaed]">
+                   {activeTab === "Incident History"
+                     ? `Incident History (${historyFiltered.length})`
+                     : `Recent Investigations (${filteredTableRecords.length})`}
+                 </h3>
                 </div>
                 
                 <div className="flex items-center justify-between mb-6">
@@ -913,7 +944,7 @@ export default function Investigations() {
                     <input 
                       type="text" 
                       value={containerSearch}
-                      onChange={(e) => setContainerSearch(e.target.value)}
+                      onChange={(e) => { setContainerSearch(e.target.value); setHistoryPage(1) }}
                       placeholder="Filter by container name..." 
                       className="w-full bg-[#121212] border border-[#3c4043] rounded-[4px] pl-10 pr-3 py-2 text-[13px] text-[#e8eaed] placeholder:text-[#9aa0a6] focus:outline-none focus:border-[#8ab4f8] transition-colors" 
                     />
@@ -995,16 +1026,70 @@ export default function Investigations() {
                             </TableCell>
                           </TableRow>
                         ))}
-                        {filteredTableRecords.length === 0 && (
+                      {filteredTableRecords.length === 0 && (
                           <TableRow>
                             <TableCell colSpan={6} className="h-40 text-center text-[#9aa0a6] text-[14px]">
-                              {containerSearch ? "No matching investigations found." : (activeTab === "Incident History" ? "No resolved historical incidents." : "No active investigations running.")}
+                              {containerSearch
+                                ? "No matching investigations found."
+                                : activeTab === "Incident History"
+                                  ? "No investigations recorded yet."
+                                  : "No investigations recorded yet."}
                             </TableCell>
                           </TableRow>
                         )}
                       </TableBody>
                     </Table>
                   </ScrollArea>
+
+                  {/* ── Pagination (Incident History only) ── */}
+                  {activeTab === "Incident History" && historyTotalPages > 1 && (
+                    <div className="flex items-center justify-between px-4 py-3 border-t border-[#3c4043] bg-[#0a0a0a] shrink-0">
+                      <span className="text-[12px] text-[#9aa0a6] tabular-nums">
+                        Showing {((historyPageSafe - 1) * HISTORY_PAGE_SIZE) + 1}–{Math.min(historyPageSafe * HISTORY_PAGE_SIZE, historyFiltered.length)} of {historyFiltered.length}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          disabled={historyPageSafe <= 1}
+                          onClick={() => setHistoryPage(p => Math.max(1, p - 1))}
+                          className="px-3 py-1.5 rounded-[4px] text-[12px] font-medium border border-[#3c4043] text-[#9aa0a6] hover:text-[#e8eaed] hover:border-[#8ab4f8]/40 disabled:opacity-30 disabled:cursor-not-allowed transition-colors bg-transparent"
+                        >
+                          ← Prev
+                        </button>
+                        {Array.from({ length: historyTotalPages }, (_, i) => i + 1)
+                          .filter(p => p === 1 || p === historyTotalPages || Math.abs(p - historyPageSafe) <= 2)
+                          .reduce((acc, p, idx, arr) => {
+                            if (idx > 0 && p - arr[idx - 1] > 1) acc.push('...')
+                            acc.push(p)
+                            return acc
+                          }, [])
+                          .map((p, i) =>
+                            p === '...' ? (
+                              <span key={`ellipsis-${i}`} className="px-2 text-[12px] text-[#5f6368]">…</span>
+                            ) : (
+                              <button
+                                key={p}
+                                onClick={() => setHistoryPage(p)}
+                                className={`px-3 py-1.5 rounded-[4px] text-[12px] font-medium border transition-colors ${
+                                  p === historyPageSafe
+                                    ? 'bg-[#8ab4f8]/15 border-[#8ab4f8]/40 text-[#8ab4f8]'
+                                    : 'border-[#3c4043] text-[#9aa0a6] hover:text-[#e8eaed] hover:border-[#8ab4f8]/30 bg-transparent'
+                                }`}
+                              >
+                                {p}
+                              </button>
+                            )
+                          )
+                        }
+                        <button
+                          disabled={historyPageSafe >= historyTotalPages}
+                          onClick={() => setHistoryPage(p => Math.min(historyTotalPages, p + 1))}
+                          className="px-3 py-1.5 rounded-[4px] text-[12px] font-medium border border-[#3c4043] text-[#9aa0a6] hover:text-[#e8eaed] hover:border-[#8ab4f8]/40 disabled:opacity-30 disabled:cursor-not-allowed transition-colors bg-transparent"
+                        >
+                          Next →
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}

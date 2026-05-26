@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 
 from app.web_sockets.manager import manager
 from app.docker_monitor.events import listen_to_events
-from app.docker_monitor.container import get_all_containers
+from app.docker_monitor.container import get_all_containers, async_get_all_containers
 from app.services.health_engine import detect_incidents
 from app.services.remediation import restart_container, start_container, delete_container, stop_container
 from app.runtime.state import (
@@ -17,7 +17,7 @@ from app.runtime.state import (
     investigation_states, audit_log,
 )
 from app.docker_monitor.monitor_loop import start_monitor_loop
-from app.docker_monitor.metrics import get_all_metrics, get_container_metrics
+from app.docker_monitor.metrics import get_all_metrics, get_container_metrics, async_get_all_metrics
 from app.context.aggregator import build_investigation_packet
 from app.ai.investigator import investigate
 
@@ -127,7 +127,7 @@ app = FastAPI(lifespan=lifespan, title="DockHeal API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -244,12 +244,14 @@ async def health_notifications():
 
 @app.get("/containers")
 async def containers():
-    return get_all_containers()
+    return await async_get_all_containers()
 
 
 @app.get("/incidents")
 async def incidents():
-    return detect_incidents()
+    containers = await async_get_all_containers()
+    metrics = await async_get_all_metrics()
+    return detect_incidents(containers, metrics)
 
 
 @app.post("/restart/{container_name}")
@@ -276,13 +278,19 @@ async def stop(container_name: str):
 
 @app.get("/containers/metrics")
 async def all_metrics():
-    return get_all_metrics()
+    return await async_get_all_metrics()
 
 
 @app.get("/containers/{container_name}/logs")
 async def container_logs(container_name: str, tail: int = 100):
     from app.ai.tools.container_tools import fetch_logs_tool
-    res = fetch_logs_tool(container_name=container_name, tail=tail, actor="operator")
+    # fetch_logs_tool calls blocking Docker SDK calls — run in thread pool.
+    res = await asyncio.to_thread(
+        fetch_logs_tool,
+        container_name=container_name,
+        tail=tail,
+        actor="operator"
+    )
     if not res.get("success"):
         output = res.get("output", "")
         if "not found" in output.lower():
@@ -302,9 +310,10 @@ async def all_context():
 async def get_context(container_name: str):
     if container_name in context_store:
         return context_store[container_name]
-    packet = build_investigation_packet(
+    packet = await asyncio.to_thread(
+        build_investigation_packet,
         container_name,
-        incident={"type": "ManualInspection", "severity": "P3", "message": "On-demand context request"},
+        {"type": "ManualInspection", "severity": "P3", "message": "On-demand context request"},
     )
     if packet["container_state"].get("status") == "not_found":
         raise HTTPException(status_code=404, detail=f"Container '{container_name}' not found")
@@ -314,9 +323,10 @@ async def get_context(container_name: str):
 
 @app.post("/context/{container_name}/build")
 async def force_build_context(container_name: str):
-    packet = build_investigation_packet(
+    packet = await asyncio.to_thread(
+        build_investigation_packet,
         container_name,
-        incident={"type": "ManualInspection", "severity": "P3", "message": "Force-rebuilt by operator"},
+        {"type": "ManualInspection", "severity": "P3", "message": "Force-rebuilt by operator"},
     )
     if packet["container_state"].get("status") == "not_found":
         raise HTTPException(status_code=404, detail=f"Container '{container_name}' not found")
@@ -346,7 +356,7 @@ async def trigger_investigation(container_name: str, request: Request):
     import uuid
     from datetime import datetime, timezone
     
-    # 1. Fetch container from DB to get ID
+    # Single session: read container + active investigation, then write in same connection.
     async with AsyncSessionLocal() as session:
         res = await session.execute(
             select(Container).where(Container.container_name == container_name)
@@ -355,7 +365,7 @@ async def trigger_investigation(container_name: str, request: Request):
         if not container:
             raise HTTPException(status_code=404, detail=f"Container '{container_name}' not found")
         
-        # 2. Check for active investigation for this container in the DB
+        # Check for active investigation for this container in the DB
         # Active is not in: RESOLVED, REJECTED, TIMED_OUT, ESCALATED.
         res_inv = await session.execute(
             select(Investigation)
@@ -374,35 +384,33 @@ async def trigger_investigation(container_name: str, request: Request):
         )
         db_inv = res_inv.scalar_one_or_none()
 
-    if db_inv:
-        inv_id_str = str(db_inv.id)
-        # If it is running (not PAUSED), handle restart or return already_running
-        if db_inv.lifecycle_state != LifecycleState.PAUSED:
-            if operator_logs:
-                if inv_id_str in active_tasks:
-                    cancellation_reasons[inv_id_str] = "restarted"
-                    active_tasks[inv_id_str].cancel()
-                    import asyncio
-                    try:
-                        await active_tasks[inv_id_str]
-                    except asyncio.CancelledError:
-                        pass
-                    active_tasks.pop(inv_id_str, None)
-            else:
-                return {"status": "already_running", "investigation_id": inv_id_str}
-        
-        # It is PAUSED, so resume it!
-        # Update memory state first
-        entry = investigation_states.get(inv_id_str, {})
-        entry.update({
-            "state": "INVESTIGATING",
-            "container": container_name,
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        })
-        investigation_states[inv_id_str] = entry
+        if db_inv:
+            inv_id_str = str(db_inv.id)
+            # If it is running (not PAUSED), handle restart or return already_running
+            if db_inv.lifecycle_state != LifecycleState.PAUSED:
+                if operator_logs:
+                    if inv_id_str in active_tasks:
+                        cancellation_reasons[inv_id_str] = "restarted"
+                        active_tasks[inv_id_str].cancel()
+                        import asyncio
+                        try:
+                            await active_tasks[inv_id_str]
+                        except asyncio.CancelledError:
+                            pass
+                        active_tasks.pop(inv_id_str, None)
+                else:
+                    return {"status": "already_running", "investigation_id": inv_id_str}
+            
+            # It is PAUSED, so resume it! Update memory state first.
+            entry = investigation_states.get(inv_id_str, {})
+            entry.update({
+                "state": "INVESTIGATING",
+                "container": container_name,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            })
+            investigation_states[inv_id_str] = entry
 
-        # Update DB state
-        async with AsyncSessionLocal() as session:
+            # Write resume state — same session, same connection
             async with session.begin():
                 await update_lifecycle(session, db_inv.id, LifecycleState.INVESTIGATING)
                 await log_timeline_event(
@@ -414,44 +422,44 @@ async def trigger_investigation(container_name: str, request: Request):
                     source_type="SYSTEM",
                 )
 
-        # Build resume packet with previous thoughts and timeline history
-        timeline_logs = []
-        for ev in sorted(db_inv.timeline_events, key=lambda e: e.sequence_number or 0):
-            timeline_logs.append(f"[{ev.created_at.isoformat()}] {ev.title}: {ev.description or ''}")
-        
-        previous_trace = {
-            "thoughts": db_inv.thoughts or "",
-            "timeline": "\n".join(timeline_logs)
-        }
+            # Build resume packet with previous thoughts and timeline history
+            timeline_logs = []
+            for ev in sorted(db_inv.timeline_events, key=lambda e: e.sequence_number or 0):
+                timeline_logs.append(f"[{ev.created_at.isoformat()}] {ev.title}: {ev.description or ''}")
+            
+            previous_trace = {
+                "thoughts": db_inv.thoughts or "",
+                "timeline": "\n".join(timeline_logs)
+            }
 
-        packet = build_investigation_packet(
-            container_name,
-            incident={"type": "ManualInvestigation", "severity": "P2", "message": "Operator-triggered resume" + (f" (attached custom logs)" if operator_logs else "")},
-        )
-        packet["investigation_id"] = inv_id_str
-        packet["previous_investigation_trace"] = previous_trace
-        if operator_logs:
-            if "logs" not in packet:
-                packet["logs"] = {}
-            packet["logs"]["operator_provided_logs"] = operator_logs
-        context_store[container_name] = packet
-        status_msg = "resumed"
-    else:
-        # Create a new investigation
-        inv_id = uuid.uuid4()
-        inv_id_str = str(inv_id)
+            packet = await asyncio.to_thread(
+                build_investigation_packet,
+                container_name,
+                {"type": "ManualInvestigation", "severity": "P2", "message": "Operator-triggered resume" + (f" (attached custom logs)" if operator_logs else "")},
+            )
+            packet["investigation_id"] = inv_id_str
+            packet["previous_investigation_trace"] = previous_trace
+            if operator_logs:
+                if "logs" not in packet:
+                    packet["logs"] = {}
+                packet["logs"]["operator_provided_logs"] = operator_logs
+            context_store[container_name] = packet
+            status_msg = "resumed"
+        else:
+            # Create a new investigation
+            inv_id = uuid.uuid4()
+            inv_id_str = str(inv_id)
 
-        # Update memory state first
-        investigation_states[inv_id_str] = {
-            "state": "INVESTIGATING",
-            "container": container_name,
-            "startedAt": datetime.now(timezone.utc).isoformat(),
-            "thoughts": "",
-            "timeline": []
-        }
+            # Update memory state first
+            investigation_states[inv_id_str] = {
+                "state": "INVESTIGATING",
+                "container": container_name,
+                "startedAt": datetime.now(timezone.utc).isoformat(),
+                "thoughts": "",
+                "timeline": []
+            }
 
-        # Create record in DB
-        async with AsyncSessionLocal() as session:
+            # Create record in DB — same session, same connection
             async with session.begin():
                 new_inv = Investigation(
                     id=inv_id,
@@ -477,18 +485,20 @@ async def trigger_investigation(container_name: str, request: Request):
                     source_type="SYSTEM",
                 )
 
-        # Build operational context packet
-        packet = build_investigation_packet(
-            container_name,
-            incident={"type": "ManualInvestigation", "severity": "P2", "message": "Operator-triggered" + (f" (attached custom logs)" if operator_logs else "")},
-        )
-        packet["investigation_id"] = inv_id_str
-        if operator_logs:
-            if "logs" not in packet:
-                packet["logs"] = {}
-            packet["logs"]["operator_provided_logs"] = operator_logs
-        context_store[container_name] = packet
-        status_msg = "started"
+            # Build operational context packet
+            packet = await asyncio.to_thread(
+                build_investigation_packet,
+                container_name,
+                {"type": "ManualInvestigation", "severity": "P2", "message": "Operator-triggered" + (f" (attached custom logs)" if operator_logs else "")},
+            )
+            packet["investigation_id"] = inv_id_str
+            if operator_logs:
+                if "logs" not in packet:
+                    packet["logs"] = {}
+                packet["logs"]["operator_provided_logs"] = operator_logs
+            context_store[container_name] = packet
+            status_msg = "started"
+
 
     # Spawn the AI investigator task in the background
     async def broadcast(msg: dict):
@@ -650,41 +660,64 @@ async def stop_investigation(container_name: str):
 @app.post("/investigations/{investigation_id}/approve")
 async def approve_investigation(investigation_id: str, user: str = "Operator"):
     from app.runtime.state import approval_events, approval_results, investigation_states
+    from datetime import datetime, timezone
     
-    if investigation_id not in approval_events:
+    logger.info(f"[APPROVAL] Attempting to approve: {investigation_id}. Active approval events: {list(approval_events.keys())}")
+    
+    target_key = None
+    for k in approval_events.keys():
+        if str(k) == str(investigation_id):
+            target_key = k
+            break
+
+    if target_key is None:
+        logger.warning(f"[APPROVAL] Mismatch: {investigation_id} not found in active approval events: {list(approval_events.keys())}")
         raise HTTPException(status_code=404, detail="Investigation not awaiting approval")
         
-    approval_results[investigation_id] = {
+    approval_results[target_key] = {
         "status": "approved",
         "user": user,
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
-    approval_events[investigation_id].set()
+    approval_events[target_key].set()
+    logger.info(f"[APPROVAL] Approved: {investigation_id}")
     return {"status": "approved"}
 
 
 @app.post("/investigations/{investigation_id}/reject")
 async def reject_investigation(investigation_id: str, user: str = "Operator"):
     from app.runtime.state import approval_events, approval_results, investigation_states
+    from datetime import datetime, timezone
     
-    if investigation_id not in approval_events:
+    logger.info(f"[APPROVAL] Attempting to reject: {investigation_id}. Active approval events: {list(approval_events.keys())}")
+    
+    target_key = None
+    for k in approval_events.keys():
+        if str(k) == str(investigation_id):
+            target_key = k
+            break
+
+    if target_key is None:
+        logger.warning(f"[APPROVAL] Mismatch: {investigation_id} not found in active approval events: {list(approval_events.keys())}")
         raise HTTPException(status_code=404, detail="Investigation not awaiting approval")
         
-    approval_results[investigation_id] = {
+    approval_results[target_key] = {
         "status": "rejected",
         "user": user,
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
-    approval_events[investigation_id].set()
+    approval_events[target_key].set()
+    logger.info(f"[APPROVAL] Rejected: {investigation_id}")
     return {"status": "rejected"}
 
 
 @app.get("/investigate/{container_name}/stream")
 async def stream_investigation(container_name: str):
     if container_name not in context_store:
-        packet = build_investigation_packet(
+        packet = await asyncio.to_thread(
+            build_investigation_packet,
             container_name,
-            incident={"type": "ManualInvestigation", "severity": "P2", "message": "SSE-triggered"},
+            {"type": "ManualInvestigation", "severity": "P2", "message": "SSE-triggered"},
         )
         if packet["container_state"].get("status") == "not_found":
             raise HTTPException(status_code=404, detail=f"Container '{container_name}' not found")
@@ -855,14 +888,17 @@ async def get_investigations():
         result_dict = None
         if rca_report_dict or inv.decision_trace:
             proposed_actions = []
+            reason_for_restart = ""
             if isinstance(inv.decision_trace, dict):
                 proposed_actions = inv.decision_trace.get("proposed_actions", [])
+                reason_for_restart = inv.decision_trace.get("reason_for_restart", "")
             
             result_dict = {
                 "rca_report": rca_report_dict,
                 "proposed_actions": proposed_actions,
                 "root_cause": inv.root_cause or "",
                 "requires_human": True,
+                "reason_for_restart": reason_for_restart,
             }
 
         # Merge with in-memory state if exists (to preserve live thoughts, etc.)
@@ -1024,10 +1060,204 @@ async def unblock_sandbox_tool(tool_name: str):
     return {"status": "ok", "blocked_tools": POLICIES.blocked_tools}
 
 
+def run_simulation_container(case_id: str, container_name: str):
+    import docker
+    client = docker.from_env()
+
+    # 1. Cleanup old container if it exists
+    try:
+        old = client.containers.get(container_name)
+        old.stop(timeout=2)
+        old.remove()
+    except docker.errors.NotFound:
+        pass
+    except Exception:
+        pass
+
+    # 2. Setup strict hardware capped settings
+    image = "python:3.11-alpine"
+    command = ""
+    healthcheck = None
+    restart_policy = None
+    mem_limit = "10m"
+    memswap_limit = "10m"
+    nano_cpus = 100000000 # 0.1 CPU core
+
+    if case_id == "oom_killed":
+        command = (
+            "python -c \""
+            "import time, sys\n"
+            "print('webapp: starting server...', flush=True)\n"
+            "print('webapp: allocate memory pool', flush=True)\n"
+            "print('FATAL: OutOfMemoryError: Java heap space', flush=True)\n"
+            "l = []\n"
+            "while True:\n"
+            "    l.append('x' * 512 * 1024)\n"
+            "    time.sleep(0.1)"
+            "\""
+        )
+        mem_limit = "10m"
+        memswap_limit = "10m"
+        nano_cpus = 100000000
+
+    elif case_id == "crash_loop":
+        command = (
+            "python -c \""
+            "import sys\n"
+            "print('db: starting PostgreSQL...', flush=True)\n"
+            "print('FATAL:  lock file \"postmaster.pid\" already exists', flush=True)\n"
+            "print('HINT:  Is another postmaster (PID 48) running in data directory \"/var/lib/postgresql/data\"?', flush=True)\n"
+            "sys.exit(1)"
+            "\""
+        )
+        restart_policy = {"Name": "always"}
+        mem_limit = "10m"
+        memswap_limit = "10m"
+        nano_cpus = 50000000 # 0.05 CPU core
+
+    elif case_id == "rate_limit":
+        command = (
+            "python -c \""
+            "print('gateway: rate limiter active', flush=True)\n"
+            "print('WARNING: rate limit breached for client 192.168.1.100 (1500 req/sec > limit 1000)', flush=True)\n"
+            "while True:\n"
+            "    pass"
+            "\""
+        )
+        mem_limit = "10m"
+        memswap_limit = "10m"
+        nano_cpus = 100000000
+
+    elif case_id == "unhealthy_nginx":
+        command = (
+            "sh -c '"
+            "echo \"nginx: starting worker processes...\"; "
+            "sleep 8; "
+            "echo \"[error] connect() failed (111: Connection refused) while connecting to upstream\"; "
+            "touch /tmp/unhealthy; "
+            "while true; do sleep 3600; done"
+            "'"
+        )
+        healthcheck = {
+            "Test": ["CMD-SHELL", "test ! -f /tmp/unhealthy"],
+            "Interval": 3000000000, # 3s
+            "Timeout": 1000000000,  # 1s
+            "Retries": 1,
+            "StartPeriod": 1000000000 # 1s
+        }
+        mem_limit = "15m"
+        memswap_limit = "15m"
+        nano_cpus = 50000000
+
+    elif case_id == "disk_full":
+        command = (
+            "python -c \""
+            "import time\n"
+            "print('logger: flushing write buffer', flush=True)\n"
+            "print('ERROR: write failed: No space left on device (ENOSPC)', flush=True)\n"
+            "while True:\n"
+            "    time.sleep(3600)"
+            "\""
+        )
+        mem_limit = "10m"
+        memswap_limit = "10m"
+        nano_cpus = 50000000 # 0.05 CPU core
+
+    else:
+        raise ValueError(f"Unknown case_id: {case_id}")
+
+    # 3. Spin up the container
+    c = client.containers.run(
+        image=image,
+        command=command,
+        name=container_name,
+        detach=True,
+        mem_limit=mem_limit,
+        memswap_limit=memswap_limit,
+        nano_cpus=nano_cpus,
+        pids_limit=10,
+        network_mode="none", # isolated networking
+        restart_policy=restart_policy,
+        healthcheck=healthcheck,
+        labels={"dockheal-simulation": "true"},
+        auto_remove=False,
+    )
+    return c.id, c.image.tags[0] if c.image.tags else image
+
+
+async def run_simulation_investigation_loop(container_name: str, case_id: str, inv_id_str: str, broadcast_fn):
+    import docker
+    client = docker.from_env()
+
+    # Wait for the container to reach the desired failure state (up to 15 seconds)
+    for _ in range(15):
+        await asyncio.sleep(1.0)
+        try:
+            c = client.containers.get(container_name)
+            c.reload()
+            
+            is_failed = False
+            if case_id in ("oom_killed", "crash_loop"):
+                if c.status == "exited":
+                    is_failed = True
+            elif case_id == "unhealthy_nginx":
+                health = c.attrs.get("State", {}).get("Health", {}).get("Status", "")
+                if health == "unhealthy":
+                    is_failed = True
+            elif case_id == "rate_limit":
+                from app.docker_monitor.metrics import get_container_metrics
+                metrics = get_container_metrics(container_name)
+                if metrics and metrics.get("cpu_percent", 0.0) >= 85.0:
+                    is_failed = True
+            elif case_id == "disk_full":
+                is_failed = True
+            
+            if is_failed:
+                break
+        except Exception:
+            pass
+
+    severity = "P1" if case_id in ("oom_killed", "crash_loop", "unhealthy_nginx") else "P2"
+    if case_id in ("oom_killed", "crash_loop"):
+        inc_type = "ContainerStopped"
+        msg = f"{container_name} exited unexpectedly"
+    elif case_id == "unhealthy_nginx":
+        inc_type = "UnhealthyContainer"
+        msg = f"{container_name} failed healthcheck"
+    elif case_id == "disk_full":
+        inc_type = "DiskFull"
+        msg = f"{container_name} log volume space exhausted (ENOSPC)"
+    else:
+        inc_type = "CpuSpike"
+        msg = f"{container_name} CPU utilization spiked"
+
+    incident = {
+        "type": inc_type,
+        "severity": severity,
+        "container": container_name,
+        "message": msg
+    }
+
+    try:
+        # Sync containers and metrics to state so context builder has accurate metrics
+        from app.docker_monitor.container import async_get_all_containers
+        from app.docker_monitor.monitor_loop import sync_containers
+        containers = await async_get_all_containers()
+        await sync_containers(containers)
+
+        packet = await asyncio.to_thread(build_investigation_packet, container_name, incident)
+        packet["investigation_id"] = inv_id_str
+        context_store[container_name] = packet
+
+        await investigate(packet, broadcast_fn)
+    except Exception as e:
+        logger.error(f"Error in simulation investigation loop: {e}", exc_info=True)
+
+
 @app.post("/simulate/trigger")
 async def simulate_trigger(payload: dict):
     case_id = payload.get("case_id")
-    container_name = f"mock-{case_id}"
+    container_name = f"dockheal-sim-{case_id}"
 
     from app.runtime.state import investigation_states, active_tasks, context_store, cancellation_reasons
     from app.db.config.config import AsyncSessionLocal
@@ -1038,9 +1268,14 @@ async def simulate_trigger(payload: dict):
     import uuid
     from datetime import datetime, timezone
     import asyncio
-    from app.ai.investigator import investigate
 
-    # 1. Ensure Container exists in DB (simulate detection)
+    # 1. Start the actual container
+    try:
+        container_id, image_name = await asyncio.to_thread(run_simulation_container, case_id, container_name)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start simulation container: {str(e)}")
+
+    # 2. Ensure Container exists in DB
     async with AsyncSessionLocal() as session:
         async with session.begin():
             res = await session.execute(
@@ -1050,43 +1285,67 @@ async def simulate_trigger(payload: dict):
             if not container:
                 container = Container(
                     container_name=container_name,
-                    runtime_id=f"mock-{case_id}-id",
-                    image_name=f"{case_id}:latest",
+                    runtime_id=container_id,
+                    image_name=image_name,
                     status="exited" if case_id in ("oom_killed", "crash_loop") else "running",
                     is_manually_stopped=False,
                 )
                 session.add(container)
                 await session.flush()
-            container_id = container.id
+            else:
+                container.status = "exited" if case_id in ("oom_killed", "crash_loop") else "running"
+                container.runtime_id = container_id
+                container.image_name = image_name
+            container_id_db = container.id
 
-    # 2. Cancel any running active task for this mock container
-    # Fetch active investigations for this container
+    # 3. Cancel any running active task and transition their DB status to REJECTED
+    tasks_to_await = []
     async with AsyncSessionLocal() as session:
-        res_inv = await session.execute(
-            select(Investigation)
-            .where(
-                Investigation.container_id == container_id,
-                Investigation.lifecycle_state.notin_([
-                    LifecycleState.RESOLVED,
-                    LifecycleState.REJECTED,
-                    LifecycleState.TIMED_OUT,
-                    LifecycleState.ESCALATED,
-                ])
+        async with session.begin():
+            res_inv = await session.execute(
+                select(Investigation)
+                .where(
+                    Investigation.container_id == container_id_db,
+                    Investigation.lifecycle_state.notin_([
+                        LifecycleState.RESOLVED,
+                        LifecycleState.REJECTED,
+                        LifecycleState.TIMED_OUT,
+                        LifecycleState.ESCALATED,
+                    ])
+                )
             )
-        )
-        old_invs = res_inv.scalars().all()
-        for old in old_invs:
-            old_id = str(old.id)
-            if old_id in active_tasks:
-                cancellation_reasons[old_id] = "restarted"
-                active_tasks[old_id].cancel()
-                try:
-                    await active_tasks[old_id]
-                except asyncio.CancelledError:
-                    pass
-                active_tasks.pop(old_id, None)
+            old_invs = res_inv.scalars().all()
+            for old in old_invs:
+                old_id = str(old.id)
+                if old_id in active_tasks:
+                    cancellation_reasons[old_id] = "restarted"
+                    active_tasks[old_id].cancel()
+                    tasks_to_await.append(active_tasks[old_id])
+                    active_tasks.pop(old_id, None)
 
-    # 3. Create a new Investigation record
+                # Update in-memory state
+                if old_id in investigation_states:
+                    investigation_states[old_id]["state"] = "REJECTED"
+
+                # Update database state to REJECTED to resolve UniqueViolationError
+                await update_lifecycle(session, old.id, LifecycleState.REJECTED)
+                await log_timeline_event(
+                    session,
+                    old.id,
+                    event_type="INVESTIGATION_ABORTED",
+                    title="Investigation Aborted",
+                    description="This investigation was aborted because a new simulation was triggered.",
+                    source_type="SYSTEM",
+                )
+
+    # Await cancelled tasks outside of transaction to avoid blocking connections
+    for task in tasks_to_await:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    # 4. Create a new Investigation record
     inv_id = uuid.uuid4()
     inv_id_str = str(inv_id)
 
@@ -1102,10 +1361,10 @@ async def simulate_trigger(payload: dict):
         async with session.begin():
             new_inv = Investigation(
                 id=inv_id,
-                container_id=container_id,
+                container_id=container_id_db,
                 title=f"Simulated Incident: {case_id.replace('_', ' ').upper()}",
                 incident_summary=f"Simulated test case triggered: {case_id}",
-                severity_level=SeverityLevel.P1 if case_id in ("oom_killed", "crash_loop") else SeverityLevel.P2,
+                severity_level=SeverityLevel.P1 if case_id in ("oom_killed", "crash_loop", "unhealthy_nginx") else SeverityLevel.P2,
                 lifecycle_state=LifecycleState.DETECTED,
                 started_at=datetime.now(timezone.utc),
                 created_by="simulation",
@@ -1118,59 +1377,15 @@ async def simulate_trigger(payload: dict):
                 inv_id,
                 event_type="INVESTIGATION_STARTED",
                 title="Simulation Initiated",
-                description=f"AI Agent starting simulation on mock container '{container_name}'.",
+                description=f"AI Agent starting simulation on real container '{container_name}'.",
                 source_type="SYSTEM",
             )
 
-    # 4. Construct a custom telemetry packet depending on the case
-    now = datetime.now(timezone.utc).isoformat()
-    
-    # Base packet
-    packet = {
-        "schema_version": "2.0.0",
-        "generated_at": now,
-        "investigation_id": inv_id_str,
-        "incident": {
-            "type": "Simulation",
-            "severity": "P1" if case_id in ("oom_killed", "crash_loop") else "P2",
-            "container": container_name,
-            "message": f"Simulation test case: {case_id}",
-            "triggered_at": now,
-        },
-        "container_state": {
-            "status": "exited" if case_id in ("oom_killed", "crash_loop") else "running",
-            "exit_code": 137 if case_id == "oom_killed" else (1 if case_id == "crash_loop" else 0),
-            "oom_killed": case_id == "oom_killed",
-            "restart_count": 5 if case_id == "crash_loop" else 0,
-            "health": "unhealthy" if case_id == "unhealthy_nginx" else "healthy",
-        },
-        "metrics": {
-            "cpu_percent": 95.0 if case_id == "rate_limit" else 5.0,
-            "mem_usage_mb": 1024.0 if case_id == "oom_killed" else 150.0,
-            "mem_limit_mb": 1024.0,
-            "mem_percent": 100.0 if case_id == "oom_killed" else 15.0,
-            "uptime_seconds": 12,
-            "thresholds_breached": ["mem > 95%"] if case_id == "oom_killed" else [],
-        },
-        "logs": {
-            "raw_tail": f"[mock] Logs for {container_name}",
-            "signals": {
-                "errors": ["OutOfMemory" if case_id == "oom_killed" else "error"],
-                "warnings": []
-            }
-        },
-        "dependency_context": {
-            "peer_summaries": []
-        }
-    }
-
-    context_store[container_name] = packet
-
-    # 5. Spawn background AI investigator
+    # 5. Spawn background AI investigator loop
     async def broadcast(msg: dict):
         await manager.broadcast(msg)
 
-    task = asyncio.create_task(investigate(packet, broadcast))
+    task = asyncio.create_task(run_simulation_investigation_loop(container_name, case_id, inv_id_str, broadcast))
     active_tasks[inv_id_str] = task
 
     return {"status": "started", "investigation_id": inv_id_str}

@@ -83,7 +83,7 @@ def _preflight(container_name: str) -> Optional[str]:
 
 # ── Health poll ────────────────────────────────────────────────────────────────
 
-def _poll_health(container_name: str) -> tuple[str, bool]:
+def poll_health(container_name: str) -> tuple[str, bool]:
     """
     Poll container status/health until healthy or timeout.
 
@@ -201,7 +201,7 @@ def attempt_deterministic_restart(
         return result
 
     # ── Health verification ────────────────────────────────────────────────────
-    post_health, verified = _poll_health(container_name)
+    post_health, verified = poll_health(container_name)
     elapsed = time.monotonic() - start
 
     result.post_health      = post_health

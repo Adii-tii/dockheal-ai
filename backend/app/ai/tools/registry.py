@@ -11,6 +11,8 @@ from app.ai.tools.container_tools import (
     inspect_container_tool,
     update_memory_limit_tool,
     rollback_image_tool,
+    prune_docker_system_tool,
+    clear_container_logs_tool,
 )
 from app.ai.tools.alert_tools import send_alert_tool
 from app.ai.tools.decorator import TOOL_METADATA
@@ -22,6 +24,8 @@ TOOL_REGISTRY: dict = {
     "fetch_logs":           fetch_logs_tool,
     "inspect_container":    inspect_container_tool,
     "send_alert":           send_alert_tool,
+    "prune_docker_system":  prune_docker_system_tool,
+    "clear_container_logs": clear_container_logs_tool,
     # Phase 2 — registered but hard-blocked by guardrails
     "update_memory_limit":  update_memory_limit_tool,
     "rollback_image":       rollback_image_tool,
@@ -52,6 +56,30 @@ def execute_tool(
         investigation_id=investigation_id,
         actor=actor,
         **parameters,
+    )
+
+
+import asyncio as _asyncio
+
+async def async_execute_tool(
+    tool_name: str,
+    parameters: dict,
+    investigation_id: str = "manual",
+    actor: str = "ai_auto",
+) -> dict:
+    """
+    Async-safe tool executor.
+
+    Tool functions are synchronous and make blocking Docker SDK calls internally.
+    This wrapper runs the entire tool in a thread pool so the event loop is
+    never frozen during container.restart(), container.logs(), or inspect calls.
+    """
+    return await _asyncio.to_thread(
+        execute_tool,
+        tool_name,
+        parameters,
+        investigation_id,
+        actor,
     )
 
 

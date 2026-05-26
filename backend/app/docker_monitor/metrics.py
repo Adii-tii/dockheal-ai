@@ -130,6 +130,17 @@ def get_all_metrics() -> list[dict]:
     return results
 
 
+# ── Async wrappers ─────────────────────────────────────────────────────────────
+# Docker SDK uses blocking urllib3 I/O. Use these in all async callers so the
+# event loop is never frozen during stats/container list calls.
+
+import asyncio as _asyncio
+
+async def async_get_all_metrics() -> list[dict]:
+    """Non-blocking wrapper — runs get_all_metrics() in the default thread pool."""
+    return await _asyncio.to_thread(get_all_metrics)
+
+
 def get_container_metrics(name: str) -> dict | None:
     """Single-container metrics by name. Returns None if not found."""
     if not client:
@@ -164,3 +175,8 @@ def get_container_metrics(name: str) -> dict | None:
             print(f"[METRICS] Could not get stats for {name}: {e}")
 
     return entry
+
+
+async def async_get_container_metrics(name: str) -> dict | None:
+    """Non-blocking wrapper — runs get_container_metrics() in the default thread pool."""
+    return await _asyncio.to_thread(get_container_metrics, name)
